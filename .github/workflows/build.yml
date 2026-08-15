@@ -1,0 +1,67 @@
+# スミケシの実行ファイルを自動ビルドする（Python不要版の配布物）
+#
+# - 手動実行（workflow_dispatch）: ビルドが通るかの確認用。成果物はArtifactsに残る
+# - vX.Y.Z タグのpush: ビルドしてReleaseに自動添付する
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows
+          - os: macos-latest
+            label: macos-apple-silicon
+          - os: macos-13
+            label: macos-intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ライブラリとPyInstallerを導入
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: ビルド
+        run: pyinstaller --noconfirm --clean sumikeshi.spec
+
+      - name: 動作確認（起動してヘルプが出るか）
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./dist/sumikeshi/sumikeshi-check.exe --help > /dev/null
+          else
+            ./dist/sumikeshi/sumikeshi-check --help > /dev/null
+          fi
+
+      - name: ZIP化（macOS）
+        if: runner.os == 'macOS'
+        run: cd dist && zip -ry ../sumikeshi-${{ matrix.label }}.zip sumikeshi
+
+      - name: ZIP化（Windows）
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist/sumikeshi -DestinationPath sumikeshi-${{ matrix.label }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sumikeshi-${{ matrix.label }}
+          path: sumikeshi-${{ matrix.label }}.zip
+
+      - name: Releaseに添付（タグ時のみ）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sumikeshi-${{ matrix.label }}.zip

@@ -4,3 +4,6 @@ output/
 samples/ダミー調査票.pdf
 samples/leak-check/
 .DS_Store
+build/
+dist/
+*.zip

@@ -33,9 +33,20 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-BASE_DIR = Path(__file__).resolve().parent
+# 実行ファイル版（PyInstaller）では、実行ファイルの隣を基準にする
+FROZEN = getattr(sys, "frozen", False)
+BASE_DIR = (Path(sys.executable) if FROZEN else Path(__file__)).resolve().parent
 PRESET_DIR = BASE_DIR / "presets"
 OUTPUT_DIR = BASE_DIR / "output"
+
+
+def _mark(sym: str, alt: str) -> str:
+    """コンソールが絵文字を表示できない環境（Windowsの一部）では代替表記にする。"""
+    try:
+        sym.encode(sys.stdout.encoding or "utf-8")
+        return sym
+    except (UnicodeEncodeError, LookupError):
+        return alt
 
 # 判定
 #   合格   … 指定した領域について、漏れの兆候が見つからなかった
@@ -556,10 +567,13 @@ def main():
     print("  氏名（保護者署名等）は見ていない。欄の網羅は人が現物で確認する")
     print("=" * 64)
     worst = OK
+    console_marks = {OK: _mark("✅", "[OK]") + " 合格",
+                     NG: _mark("❌", "[NG]") + " 不合格",
+                     WARN: _mark("⚠️", "[!]") + " 要確認"}
     for r in results:
         ng = sum(1 for p in r["pages"] if p["verdict"] == NG)
         wn = sum(1 for p in r["pages"] if p["verdict"] == WARN)
-        mark = {OK: "✅ 合格", NG: "❌ 不合格", WARN: "⚠️ 要確認"}[r["verdict"]]
+        mark = console_marks[r["verdict"]]
         print(f"{mark}  {r['path'].name}  "
               f"（{r.get('n_pages', '?')}ページ中 不合格{ng} / 要確認{wn}）")
         for x in r["file_reasons"]:
@@ -588,10 +602,26 @@ def main():
 
 
 if __name__ == "__main__":
+    # 実行ファイル版をダブルクリック（引数なし）で起動した場合は、
+    # 隣の output/ を検査し、結果を読めるよう Enter 待ちで閉じる
+    interactive = FROZEN and len(sys.argv) == 1
+    if interactive:
+        sys.argv.append(str(OUTPUT_DIR))
     try:
-        sys.exit(main())
-    except SystemExit:
-        raise
+        code = main()
+    except SystemExit as e:
+        if isinstance(e.code, int):
+            code = e.code
+        else:  # raise SystemExit("メッセージ") の形。捕まえたので自前で表示する
+            if e.code is not None:
+                print(e.code, file=sys.stderr)
+            code = 2
     except Exception as e:
         print(f"実行エラー: {e}", file=sys.stderr)
-        sys.exit(2)
+        code = 2
+    if interactive:
+        try:
+            input("\nEnterキーを押すと閉じます…")
+        except EOFError:
+            pass
+    sys.exit(code)

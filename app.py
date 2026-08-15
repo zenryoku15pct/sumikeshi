@@ -23,7 +23,14 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from flask import Flask, abort, jsonify, request, send_file
 
-BASE_DIR = Path(__file__).resolve().parent
+# 実行ファイル版（PyInstaller）では、同梱リソースは展開先（_MEIPASS）、
+# 利用者が触るフォルダ（output/presets）は実行ファイルの隣に置く
+FROZEN = getattr(sys, "frozen", False)
+if FROZEN:
+    RES_DIR = Path(sys._MEIPASS)  # noqa: SLF001
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    RES_DIR = BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = BASE_DIR / "output"
 PRESET_DIR = BASE_DIR / "presets"
 TRASH_DIR = BASE_DIR / "trash"
@@ -33,7 +40,7 @@ PORT = 8765
 RENDER_DPI = 150
 MAX_RENDER_WIDTH = 2200  # 表示用レンダリングの最大幅(px)
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+app = Flask(__name__, static_folder=str(RES_DIR / "static"), static_url_path="/static")
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024**3
 
 # アップロード済みPDF（メモリ保持のみ・ディスクに書かない）

@@ -22,22 +22,40 @@
   原本ファイルは変更しません。
 - **複数PDF一括・ファイルごとの個別設定・プリセット保存**に対応。
 
-## 動作環境
+## 入手方法
 
-- macOS または Windows（Python 3.10 以上）
-- 主要ライブラリ：Flask、PyMuPDF（`requirements.txt` 参照）
+### A. 実行ファイル版（推奨・Pythonのインストール不要）
 
-## インストール（初回のみ）
+[Releases](../../releases) から自分のOSのZIPをダウンロードして展開するだけです。
 
-### macOS
+| ファイル | 対象 |
+|-|-|
+| `sumikeshi-windows.zip` | Windows |
+| `sumikeshi-macos-apple-silicon.zip` | Mac（Appleシリコン：M1以降） |
+| `sumikeshi-macos-intel.zip` | Mac（Intel：2020年頃まで） |
+
+展開したフォルダの中の **`sumikeshi`** をダブルクリックすると、黒い画面が開いたあと
+ブラウザで操作画面が立ち上がります（終了は黒い画面を閉じる）。
+マスキング後は **`sumikeshi-check`** をダブルクリックすると、隣にできた `output/` を
+全ページ自動検査します。
+
+**初回だけ、OSの警告が出ます**（開発元の署名を購入していないためで、異常ではありません。
+中身はこのリポジトリのソースそのものです）：
+
+- **Windows**：青い「WindowsによってPCが保護されました」→「**詳細情報**」→「**実行**」
+- **macOS**：「開発元を検証できません」→ システム設定 → プライバシーとセキュリティ →
+  下部の「**このまま開く**」（古いmacOSでは右クリック→「開く」でも可）
+
+### B. ソース版（Pythonがある人・中身を確かめたい人向け）
+
+**macOS**
 
 1. このリポジトリをダウンロードして展開（緑の「Code」→「Download ZIP」）
 2. `セットアップ.command` をダブルクリック
-   - 「開発元を検証できません」と出たら：右クリック →「開く」で実行できます
    - Python 3 が無いと言われたら：ターミナルで `xcode-select --install` を実行してから再度
 3. 以後は `PDFマスクツール.command` のダブルクリックで起動
 
-### Windows
+**Windows**
 
 1. [python.org](https://www.python.org/downloads/) から Python 3 をインストール
    （**「Add python.exe to PATH」に必ずチェック**）
@@ -45,6 +63,7 @@
 3. 以後は `PDFマスクツール.bat` のダブルクリックで起動
 
 セットアップ時に、お試し用のダミーPDF（架空の氏名入り・`samples/ダミー調査票.pdf`）が生成されます。
+実行ファイル版はGitHub Actions（`.github/workflows/build.yml`）がこのソースから自動ビルドしたものです。
 
 ## 使い方（4ステップ）
 
@@ -60,6 +79,9 @@
 ## 全ページ自動検査（外部へ渡す前の関門）
 
 マスキング後のPDFを機械で全ページ検査します。**外部（AIサービス等）へ渡す前に必ず通してください。**
+
+- **実行ファイル版**：`sumikeshi-check` をダブルクリック（隣の `output/` を全ページ検査）
+- **ソース版**：
 
 ```
 python3 check_masked.py output/
