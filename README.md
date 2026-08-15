@@ -32,7 +32,8 @@
 |-|-|
 | `sumikeshi-windows.zip` | Windows |
 | `sumikeshi-macos-apple-silicon.zip` | Mac（Appleシリコン：M1以降） |
-| `sumikeshi-macos-intel.zip` | Mac（Intel：2020年頃まで） |
+
+（Intel Mac＝2020年頃までの機種は、下の**ソース版**を使ってください）
 
 展開したフォルダの中の **`sumikeshi`** をダブルクリックすると、黒い画面が開いたあと
 ブラウザで操作画面が立ち上がります（終了は黒い画面を閉じる）。

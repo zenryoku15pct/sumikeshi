@@ -23,6 +23,14 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from flask import Flask, abort, jsonify, request, send_file
 
+# Windowsで出力先の文字コードが日本語非対応（cp1252等）のとき、
+# 日本語の印字でクラッシュしないよう「表せない文字は?に置換」に切り替える
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 # 実行ファイル版（PyInstaller）では、同梱リソースは展開先（_MEIPASS）、
 # 利用者が触るフォルダ（output/presets）は実行ファイルの隣に置く
 FROZEN = getattr(sys, "frozen", False)

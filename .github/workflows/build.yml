@@ -22,8 +22,8 @@ jobs:
             label: windows
           - os: macos-latest
             label: macos-apple-silicon
-          - os: macos-13
-            label: macos-intel
+          # Intel Mac（macos-13）は実行環境の提供終了により対象外。
+          # Intel Macの利用者はソース版（セットアップ.command）を使う
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
