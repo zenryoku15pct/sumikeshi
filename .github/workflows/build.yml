@@ -33,7 +33,13 @@ jobs:
           python-version: "3.12"
 
       - name: ライブラリとPyInstallerを導入
-        run: pip install -r requirements.txt pyinstaller
+        # PyInstallerはソース配布から入れ、起動用の殻（bootloader）をその場でコンパイルする。
+        # 配布済みの既製バイナリの殻はマルウェアにも流用されるため、殻の指紋だけで
+        # ウイルス対策ソフトに誤検知される（実例：ウイルスバスター Troj.Win32.TRX系・2026-08）。
+        # その場で作った殻は指紋が既知のものと一致しないので、この誤検知を避けられる。
+        run: |
+          pip install -r requirements.txt
+          pip install --no-binary pyinstaller pyinstaller
 
       - name: ビルド
         run: pyinstaller --noconfirm --clean sumikeshi.spec
