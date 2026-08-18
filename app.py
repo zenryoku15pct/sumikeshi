@@ -187,6 +187,45 @@ def apply_masks(data: bytes, rects: list[dict], color: str, page_numbers: list[i
         doc.close()
 
 
+def find_blank_rects(data: bytes, rects: list[dict], page_numbers: list[int]) -> list[int]:
+    """塗る前の原本を見て、「元から何も無かった矩形」の番号を返す。
+
+    塗ったあとの検査では、白紙を黒く塗っても「きれいに消えた」と判定されてしまう
+    （指定範囲は確かに均一になっているため）。位置を間違えた矩形に気づくには、
+    塗る前に中身があったかを見るしかない。1ページでも中身があれば正常とみなす。
+    """
+    blank = []
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        for idx, r in enumerate(rects):
+            has_content = False
+            for pno in page_numbers:
+                page = doc[pno - 1]
+                pr = page.rect
+                rect = fitz.Rect(
+                    pr.x0 + r["x0"] * pr.width, pr.y0 + r["y0"] * pr.height,
+                    pr.x0 + r["x1"] * pr.width, pr.y0 + r["y1"] * pr.height,
+                )
+                # 文字があるか（テキスト層つきPDF）
+                if any(not (fitz.Rect(w[:4]) & rect).is_empty for w in page.get_text("words")):
+                    has_content = True
+                    break
+                # 絵柄に濃淡があるか（スキャン画像）。狭い範囲を粗く描くので軽い
+                try:
+                    pix = page.get_pixmap(clip=rect, dpi=50, colorspace=fitz.csGRAY)
+                except Exception:
+                    has_content = True  # 判定できないときは疑わない
+                    break
+                if pix.samples and (max(pix.samples) - min(pix.samples)) > 24:
+                    has_content = True
+                    break
+            if not has_content:
+                blank.append(idx + 1)
+    finally:
+        doc.close()
+    return blank
+
+
 def verify_masked(out_bytes: bytes, rects: list[dict], page_numbers: list[int]) -> dict:
     """書き出したPDFを読み直し、指定した範囲が本当に消えているか検査する。
 
@@ -343,9 +382,18 @@ def apply_endpoint():
                 pages = parse_page_spec(ent.get("range", ""), ent.get("parity", "all"), d["pages"])
                 if not pages:
                     raise ValueError("指定範囲に該当するページがありません")
+                # 塗る前に「その場所に中身があるか」を見る（位置ずれの検出）
+                blank = find_blank_rects(d["data"], rects, pages)
                 out_bytes = apply_masks(d["data"], rects, color, pages)
                 # 書き出す前に、本当に消えているかを機械で確かめる
                 check = verify_masked(out_bytes, rects, pages)
+                if blank:
+                    nums = "・".join(f"{i}つ目" for i in blank)
+                    check["reasons"].insert(
+                        0, f"{nums}の枠は、塗る前から何もありませんでした（位置がずれていませんか）"
+                    )
+                    if check["verdict"] == "ok":
+                        check["verdict"] = "warn"
                 out_path = unique_out_path(name)
                 # 一時ファイルへ書いてから名前を付け替える。書いている途中で
                 # 強制終了されても、中途半端なPDFが完成品の顔で残らない
@@ -431,7 +479,11 @@ def delete_preset(name):
 # ただし「再読み込み」もタブを閉じたのと同じ合図を出すため、合図の直後に数秒待ち、
 # その間に心拍が戻れば終了を取り消す。マスキング処理中も終了しない（書きかけの
 # PDFを残さないため）。
-BEAT_TIMEOUT = 30.0   # 心拍がこれだけ途絶えたら、ブラウザは閉じたとみなす（秒）
+# 心拍が途絶えたときの終了は「合図が届かなかった場合の保険」なので、長めに取る。
+# ブラウザは裏に回ったタブの定期処理を大幅に間引く（数十秒〜1分に1回まで落ちる）ため、
+# 短くすると「別のウィンドウを見ていただけ」でアプリが落ちる。通常の終了は、タブを
+# 閉じたときの合図（/api/bye）が即座に効くので、こちらを急ぐ必要はない
+BEAT_TIMEOUT = 300.0  # 心拍がこれだけ途絶えたら、ブラウザは閉じたとみなす（秒）
 BYE_GRACE = 5.0       # 閉じる合図のあと、再読み込みを待つ猶予（秒）
 STARTUP_GRACE = 180.0  # 起動直後、ブラウザが開くまで待つ猶予（秒）
 
@@ -549,11 +601,12 @@ def _already_running() -> bool:
 if __name__ == "__main__":
     # 二重起動：エラーで落とさず、既に開いている画面を出してやる
     if _already_running():
-        print("スミケシはすでに起動しています。開いている画面を表示します。")
-        print("（画面が出ないときは、先に開いている黒い画面を閉じてから、もう一度どうぞ）")
-        if "--no-browser" not in sys.argv:
-            webbrowser.open(f"http://{HOST}:{PORT}/")
-        time.sleep(3)  # 黒い画面が一瞬で消えると読めないため
+        # ここでブラウザを開くと同じ画面のタブが2枚になる。2枚目には読み込み済みの
+        # PDFが映らないので「ファイルが消えた」と誤解させる。タブは開かず案内だけ出す
+        print("スミケシはすでに起動しています。")
+        print("開いているブラウザのタブに戻ってください。")
+        print(f"（タブが見当たらないときは、ブラウザで {HOST}:{PORT} を開いてください）")
+        time.sleep(5)  # 黒い画面が一瞬で消えると読めないため
         sys.exit(0)
 
     OUTPUT_DIR.mkdir(exist_ok=True)

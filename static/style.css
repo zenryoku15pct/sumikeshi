@@ -260,6 +260,26 @@ body {
 .apply-btn:hover:not(:disabled) { background: var(--accent-dark); }
 .apply-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
 
+/* 終了ボタン：見つけやすい大きさにするが、色は主役（マスキング実行）に譲る。
+   押し間違いが起きないよう、塗りではなく枠線で見せる */
+.quit-btn {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: bold;
+  color: #475569;
+  background: #fff;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.quit-btn:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: #fef2f2;
+}
+.quit-hint { margin-top: 8px; font-size: 11px; color: var(--muted); }
+
 .results { margin-top: 10px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
 .results .ok { color: #15803d; }
 .results .ng { color: var(--danger); }
