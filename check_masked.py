@@ -24,6 +24,10 @@
   python3 check_masked.py output/ --report output/検査レポート.md
 
 終了コード: 0=全ファイル合格 / 1=不合格または要確認あり / 2=実行エラー
+
+著作権表示（AGPL-3.0 第7条bに基づく保持要求つき）:
+    スミケシ（sumikeshi）  Copyright (C) 2026 全力の15%
+    zenryoku15@gmail.com  /  ライセンス: GNU AGPL-3.0（LICENSE 参照）
 """
 import argparse
 import json

@@ -8,6 +8,10 @@
   （黒い四角を上に重ねるだけの「見た目の黒塗り」ではなく、復元不可能）。
 - アップロードされたPDFはメモリ上のみで保持し、原本は変更しない。
   出力は ./output/ に別名で保存する（既存ファイルは上書きしない）。
+
+著作権表示（AGPL-3.0 第7条bに基づく保持要求つき）:
+    スミケシ（sumikeshi）  Copyright (C) 2026 全力の15%
+    zenryoku15@gmail.com  /  ライセンス: GNU AGPL-3.0（LICENSE 参照）
 """
 import io
 import json
