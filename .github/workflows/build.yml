@@ -67,16 +67,13 @@ jobs:
       - name: 説明書・ライセンス・お試し用PDFを同梱
         # ZIPだけ受け取った人が、GitHubへ戻らずに使い方を読めるようにする。
         # LICENSEの同梱はAGPL-3.0の要件でもある。
-        # Windowsは .md に既定の関連付けが無くダブルクリックで開けないため、
-        # 同じ中身を「はじめにお読みください.txt」の名前で入れる。
+        # 説明書は .md ではなく .txt で入れる。Windowsは .md に既定の関連付けが無く、
+        # macOSも既定アプリが未設定のことが多いため、どちらもダブルクリックで開けない
+        # （2026-08-18に実機確認）。中身はREADME.mdと同一。
         shell: bash
         run: |
           cp LICENSE dist/sumikeshi/
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp README.md "dist/sumikeshi/はじめにお読みください.txt"
-          else
-            cp README.md dist/sumikeshi/
-          fi
+          cp README.md "dist/sumikeshi/はじめにお読みください.txt"
           python make_dummy_sample.py
           mkdir -p "dist/sumikeshi/お試し用PDF"
           cp "samples/ダミー調査票.pdf" "dist/sumikeshi/お試し用PDF/"
