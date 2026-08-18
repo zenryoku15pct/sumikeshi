@@ -13,6 +13,14 @@ from pathlib import Path
 
 import fitz
 
+# Windowsで出力先の文字コードが日本語非対応（cp1252等）のとき、
+# 日本語の印字でクラッシュしないよう「表せない文字は?に置換」に切り替える
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 BASE_DIR = Path(__file__).resolve().parent
 OUT = BASE_DIR / "samples" / "ダミー調査票.pdf"
 

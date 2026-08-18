@@ -180,6 +180,17 @@ body {
 }
 .link-btn:hover { color: var(--accent-dark); }
 
+/* 終了後の画面 */
+.quit-screen {
+  max-width: 420px;
+  margin: 18vh auto;
+  text-align: center;
+  font-family: inherit;
+  color: #444;
+}
+.quit-screen h1 { font-size: 20px; font-weight: 600; margin-bottom: 10px; }
+.quit-screen p { font-size: 13px; color: #777; }
+
 .field { margin-bottom: 10px; }
 .field:last-child { margin-bottom: 0; }
 .field-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
@@ -253,7 +264,9 @@ body {
 .results .ok { color: #15803d; }
 .results .ng { color: var(--danger); }
 .results .skip { color: var(--muted); }
+.results .warn { color: #b45309; }
 .results .out-name { color: var(--muted); }
+.results .check-reason { color: var(--danger); font-size: 11px; }
 .results .warn-note {
   margin-top: 6px;
   padding: 8px;

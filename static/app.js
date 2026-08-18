@@ -35,6 +35,7 @@ const els = {
   presetLoadAll: $("preset-load-all"),
   presetDelete: $("preset-delete"), presetName: $("preset-name"), presetSave: $("preset-save"),
   applyBtn: $("apply-btn"), results: $("results"), openOutput: $("open-output"),
+  quitBtn: $("quit-btn"),
   refDoc: $("ref-doc"), prevPage: $("prev-page"), nextPage: $("next-page"),
   pageIndicator: $("page-indicator"), previewToggle: $("preview-toggle"),
   stage: $("stage"), emptyMsg: $("empty-msg"), pageWrap: $("page-wrap"),
@@ -603,7 +604,7 @@ els.applyBtn.onclick = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ color: maskColor(), files }),
     });
-    let okCount = 0, skipCount = 0;
+    let okCount = 0, skipCount = 0, ngCount = 0, warnCount = 0;
     for (const r of data.results) {
       const div = document.createElement("div");
       if (r.skipped) {
@@ -611,25 +612,53 @@ els.applyBtn.onclick = async () => {
         div.className = "skip";
         div.textContent = `− ${r.name}: 矩形未設定のためスキップ`;
       } else if (r.ok) {
-        okCount++;
-        div.className = "ok";
-        div.innerHTML = `✓ ${escapeHtml(r.name)}（${r.pagesMasked}ページ処理）<br><span class="out-name">→ output/${escapeHtml(r.output)}</span>`;
+        // 「処理した」ではなく「検査に通った」を出す。書き出したPDFを読み直して
+        // 消えているか確かめた結果が r.check に入っている
+        const c = r.check || {};
+        const out = `<br><span class="out-name">→ output/${escapeHtml(r.output)}</span>`;
+        const detail = (c.reasons || []).length
+          ? `<br><span class="check-reason">${c.reasons.map(escapeHtml).join("<br>")}</span>`
+          : "";
+        if (c.verdict === "ng") {
+          ngCount++;
+          div.className = "ng";
+          div.innerHTML = `✕ ${escapeHtml(r.name)}（${r.pagesMasked}ページ処理・<b>検査で消え残りを検出</b>）${out}${detail}`;
+        } else if (c.verdict === "warn") {
+          warnCount++;
+          div.className = "warn";
+          div.innerHTML = `⚠ ${escapeHtml(r.name)}（${r.pagesMasked}ページ処理・要確認）${out}${detail}`;
+        } else {
+          okCount++;
+          div.className = "ok";
+          div.innerHTML = `✓ ${escapeHtml(r.name)}（${r.pagesMasked}ページ・検査済み）${out}`;
+        }
       } else {
         div.className = "ng";
         div.textContent = `✕ ${r.name}: ${r.error}`;
       }
       els.results.appendChild(div);
     }
-    if (okCount) {
+    if (okCount || ngCount || warnCount) {
       const note = document.createElement("div");
       note.className = "warn-note";
-      note.textContent = "⚠ マスク前の元ファイルはこのツールでは移動・削除されません。所定の場所への隔離、または不要なら削除を忘れずに。";
+      // 機械が見ているのは「指定した範囲の中が消えたか」だけ。範囲の外にある
+      // 氏名（別欄の保護者署名など）や、そもそも置き場所を間違えた矩形は
+      // 判定できない。ここを黙っていると「✓＝安全」と誤解される
+      note.innerHTML =
+        "⚠ 検査は<b>指定した範囲の中だけ</b>を見ています。押さえるべき欄がすべて入っているかは、" +
+        "できあがったPDFを目で確かめてください。<br>" +
+        "⚠ マスク前の元ファイルはこのツールでは移動・削除されません。所定の場所への隔離、または不要なら削除を忘れずに。";
       els.results.appendChild(note);
     }
-    toast(
-      `完了: ${okCount} ファイルを output/ に保存しました` +
-      (skipCount ? `（矩形未設定 ${skipCount} 件はスキップ）` : "")
-    );
+    if (ngCount) {
+      toast(`消え残りを検出: ${ngCount} ファイル。結果欄を確認してください`, true);
+    } else {
+      toast(
+        `完了: ${okCount} ファイルを検査まで通しました` +
+        (warnCount ? `（要確認 ${warnCount} 件）` : "") +
+        (skipCount ? `（矩形未設定 ${skipCount} 件はスキップ）` : "")
+      );
+    }
   } catch (e) {
     toast(e.message, true);
   } finally {
@@ -639,6 +668,48 @@ els.applyBtn.onclick = async () => {
 };
 
 els.openOutput.onclick = () => api("/api/open-output", { method: "POST" }).catch((e) => toast(e.message, true));
+
+// ------------------------------------------------------- 画面を閉じたら終了する
+// この画面がアプリ本体の窓口なので、閉じたらアプリも終わる。
+// ・一定間隔で「開いています」と伝える（心拍）
+// ・閉じるときに合図を送る（再読み込みも同じ合図になるが、サーバー側が数秒待って
+//   心拍が戻れば終了を取り消すので問題ない）
+const CLIENT_ID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+const BEAT_MS = 5000;
+let quitting = false;
+
+function beat() {
+  if (quitting) return;
+  fetch("/api/heartbeat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: CLIENT_ID }),
+    keepalive: true,
+  }).catch(() => { /* 終了直後の失敗は無視 */ });
+}
+beat();
+setInterval(beat, BEAT_MS);
+
+// pagehide はタブを閉じる・別ページへ移動する・再読み込みのいずれでも起きる。
+// sendBeacon は画面が消えたあとでも送り届けてくれる（fetchでは間に合わない）
+window.addEventListener("pagehide", () => {
+  const body = JSON.stringify({ client_id: CLIENT_ID });
+  navigator.sendBeacon("/api/bye", new Blob([body], { type: "application/json" }));
+});
+
+els.quitBtn.onclick = async () => {
+  if (!confirm("スミケシを終了します。よろしいですか？")) return;
+  try {
+    await api("/api/quit", { method: "POST" });
+    quitting = true;
+    document.body.innerHTML =
+      '<div class="quit-screen"><h1>スミケシを終了しました</h1>' +
+      "<p>このタブは閉じてかまいません。</p></div>";
+    window.close();  // 自動で開いたタブは閉じられることがある
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
