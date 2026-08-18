@@ -11,7 +11,7 @@
 
 import sys
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 # Windowsのexeに製品名・バージョン等の情報を埋め込む。
 # この情報が空のexeはウイルス対策ソフトの疑い度が上がる（誤検知対策の一環）。
