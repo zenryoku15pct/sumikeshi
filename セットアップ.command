@@ -4,7 +4,7 @@
 cd "$(dirname "$0")"
 set -e
 
-echo "=== PDFマスキングツール セットアップ（macOS）==="
+echo "=== スミケシ セットアップ（macOS）==="
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo ""
@@ -25,4 +25,4 @@ echo "3/3 お試し用ダミーPDFを生成しています…"
 ./.venv/bin/python make_dummy_sample.py
 
 echo ""
-echo "セットアップ完了。次からは「PDFマスクツール.command」をダブルクリックで起動できます。"
+echo "セットアップ完了。次からは「スミケシ起動.command」をダブルクリックで起動できます。"

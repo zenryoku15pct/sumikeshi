@@ -1,0 +1,107 @@
+{
+  "採取元": "app.py",
+  "素材": "ダミー調査票.pdf",
+  "素材sha256": "f154134468a7de13fb3875930a27deaddcc406ea585b91c2df1d33152a7b121b",
+  "結果": [
+    {
+      "label": "氏名欄1つ・黒・全ページ",
+      "pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 185437,
+      "sha256": "b2eb9e4fd0aefdd9aac963d6562c68376ddda3f211d639b38449957f076e3a1f"
+    },
+    {
+      "label": "2つ・黒・全ページ",
+      "pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 179033,
+      "sha256": "1c76de59bccc631957e55028a23107fe13904d44b44b81d5f838f46d891736ef"
+    },
+    {
+      "label": "1つ・白・全ページ",
+      "pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 185437,
+      "sha256": "e674355ab6fec73599ed356c4ae998fb0a0d8dad727e7aac462567fe94174f62"
+    },
+    {
+      "label": "2つ・黒・ページ指定 1-2",
+      "pages": [
+        1,
+        2
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 197633,
+      "sha256": "715da90d30e61dcb9c73ccd002a06931fe1f25f5fa58266f84e447977c9159cb"
+    },
+    {
+      "label": "1つ・黒・奇数ページのみ",
+      "pages": [
+        1,
+        3
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 200817,
+      "sha256": "a82d6583b1520352489548b57664af6932d6ad97670135a72c6d5da68523a8d2"
+    },
+    {
+      "label": "1つ・黒・偶数ページのみ",
+      "pages": [
+        2,
+        4
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 201104,
+      "sha256": "e631ea9c19f368a114c5ddf1caca6e01bb996cc7c81b4a317652775f861254e8"
+    },
+    {
+      "label": "端に接する矩形（境界値）",
+      "pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "blank": [],
+      "verdict": "ok",
+      "size": 209823,
+      "sha256": "271a274a7ad397452c9ce160700024d8c2dc565f12afd2b228636897298a31ec"
+    },
+    {
+      "label": "何もない場所（位置ずれ検出）",
+      "pages": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "blank": [
+        1
+      ],
+      "verdict": "ok",
+      "size": 211057,
+      "sha256": "f1922f7ef579b4a4c127ff43e78997c6e161d09ff078676f634670ad237e41a9"
+    }
+  ]
+}

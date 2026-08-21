@@ -52,19 +52,35 @@ jobs:
           cd ..
           pip install .
 
+      - name: お試し用PDFを生成
+        run: python make_dummy_sample.py
+
+      - name: 漏れサンプルを生成
+        run: python make_leak_samples.py
+
+      - name: テスト（中核が旧版と同じ結果か・画面の動き・漏れを見逃さないか）
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python tests/test_core.py
+          python tests/test_gui.py
+
       - name: ビルド
         run: pyinstaller --noconfirm --clean sumikeshi.spec
 
-      - name: 動作確認（起動してヘルプが出るか）
+      - name: 動作確認（自己診断が通るか）
+        # 画面を出さないアプリなので「起動してヘルプ」では確かめられない。
+        # --selftest は Qt を起動せずにマスキング中核を走らせて終わる隠しの入口。
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            ./dist/sumikeshi/sumikeshi-check.exe --help > /dev/null
+            ./dist/sumikeshi/sumikeshi.exe --selftest
           else
-            ./dist/sumikeshi/sumikeshi-check --help > /dev/null
+            "./dist/スミケシ.app/Contents/MacOS/sumikeshi" --selftest
           fi
 
-      - name: 説明書・ライセンス・お試し用PDFを同梱
+      - name: 配布物を組み立てる
         # ZIPだけ受け取った人が、GitHubへ戻らずに使い方を読めるようにする。
         # LICENSEの同梱はAGPL-3.0の要件でもある。
         # 説明書は .md ではなく .txt で入れる。Windowsは .md に既定の関連付けが無く、
@@ -72,15 +88,26 @@ jobs:
         # （2026-08-18に実機確認）。中身はREADME.mdと同一。
         shell: bash
         run: |
-          cp LICENSE dist/sumikeshi/
-          cp README.md "dist/sumikeshi/はじめにお読みください.txt"
-          python make_dummy_sample.py
-          mkdir -p "dist/sumikeshi/お試し用PDF"
-          cp "samples/ダミー調査票.pdf" "dist/sumikeshi/お試し用PDF/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            PKG="dist/sumikeshi"          # exeの入ったフォルダがそのまま配布物
+          else
+            # macOSは .app 単体では説明書を同梱できないので、包むフォルダを作る。
+            # PyInstallerが残す dist/sumikeshi（.appの材料）は配布しない
+            PKG="dist/スミケシ"
+            mkdir -p "$PKG"
+            mv "dist/スミケシ.app" "$PKG/"
+            rm -rf dist/sumikeshi
+          fi
+          cp LICENSE "$PKG/"
+          cp README.md "$PKG/はじめにお読みください.txt"
+          mkdir -p "$PKG/お試し用PDF"
+          cp "samples/ダミー調査票.pdf" "$PKG/お試し用PDF/"
 
       - name: ZIP化（macOS）
+        # -y はシンボリックリンクを保つ指定。Qtのフレームワークはリンクで組まれて
+        # いるので、これを外すと展開したアプリが起動しなくなる
+        run: cd dist && zip -ry ../sumikeshi-${{ matrix.label }}.zip スミケシ
         if: runner.os == 'macOS'
-        run: cd dist && zip -ry ../sumikeshi-${{ matrix.label }}.zip sumikeshi
 
       - name: ZIP化（Windows）
         if: runner.os == 'Windows'

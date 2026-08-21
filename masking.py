@@ -31,17 +31,60 @@ from check_masked import NG as CHECK_NG
 from check_masked import WARN as CHECK_WARN
 from check_masked import check_page
 
-# 実行ファイル版（PyInstaller）では、同梱リソースは展開先（_MEIPASS）、
-# 利用者が触るフォルダ（output/presets）は実行ファイルの隣に置く
+# 実行ファイル版（PyInstaller）では、同梱リソースは展開先（_MEIPASS）に入る。
+# 利用者が触るフォルダ（output/presets/trash）は _writable_base() が決める。
 FROZEN = getattr(sys, "frozen", False)
-if FROZEN:
-    RES_DIR = Path(sys._MEIPASS)  # noqa: SLF001
-    BASE_DIR = Path(sys.executable).resolve().parent
-else:
-    RES_DIR = BASE_DIR = Path(__file__).resolve().parent
+RES_DIR = Path(sys._MEIPASS) if FROZEN else Path(__file__).resolve().parent  # noqa: SLF001
+
+
+def _can_write(d: Path) -> bool:
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        probe = d / ".sumikeshi-write-test"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except Exception:
+        return False
+
+
+def _writable_base() -> Path:
+    """output/presets/trash を置く場所を決める。
+
+    原則は「アプリの隣」。フォルダごと持ち運ぶ使い方（USBに入れて別のPCで使う）が
+    そのまま通り、出力の在り処が一目で分かる。
+
+    ただしmacOSの .app は実行ファイルが スミケシ.app/Contents/MacOS/ の中にあるため、
+    素直に隣を取るとアプリの内部に書いてしまう。中に書くと、アプリを /Applications へ
+    入れた人は出力を見つけられず、書き込む権限も無い。そこで .app の外側を基準にし、
+    そこにも書けなければ書類フォルダへ逃がす。
+    """
+    if not FROZEN:
+        return Path(__file__).resolve().parent
+    exe = Path(sys.executable).resolve()
+    parts = exe.parts
+    if sys.platform == "darwin" and len(parts) >= 4 and parts[-2] == "MacOS" \
+            and parts[-3] == "Contents" and parts[-4].endswith(".app"):
+        near = exe.parents[3]
+    else:
+        near = exe.parent
+    if _can_write(near):
+        return near
+    return Path.home() / "Documents" / "スミケシ"
+
+
+BASE_DIR = _writable_base()
 OUTPUT_DIR = BASE_DIR / "output"
 PRESET_DIR = BASE_DIR / "presets"
 TRASH_DIR = BASE_DIR / "trash"
+
+# check_masked.py は単体のコマンドとしても動くので、自前で置き場所を決めている。
+# アプリの中から使うときは、こちらが決めた場所に揃えておく（.app の内部を指したまま
+# レポートを書きに行かないように）。
+import check_masked as _ck  # noqa: E402
+_ck.BASE_DIR = BASE_DIR
+_ck.OUTPUT_DIR = OUTPUT_DIR
+_ck.PRESET_DIR = PRESET_DIR
 
 RENDER_DPI = 150
 MAX_RENDER_WIDTH = 2200  # 表示用レンダリングの最大幅(px)

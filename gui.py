@@ -58,8 +58,8 @@ if "--selftest" in sys.argv:
     raise SystemExit(selftest())
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QImage,
-                           QKeySequence, QPainter, QPen, QPixmap, QShortcut)
+from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon, QImage,
+                           QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
                                QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -74,6 +74,9 @@ INK = "#1f2933"
 MUTED = "#616e7c"
 LINE = "#d7dce3"
 BG = "#f5f7fa"
+
+# チェック欄の印。Qtの装飾指定で読むので、区切りは / に揃える（Windowsでも同じ書き方）
+CHECK_PNG = (masking.RES_DIR / "assets" / "check.png").as_posix()
 
 MIN_SIZE = 0.005    # これより小さいドラッグは矩形として採用しない
 HANDLE_TOL = 8      # ハンドルの当たり判定（画面px）
@@ -939,6 +942,7 @@ class MainWindow(QMainWindow):
         l5.addWidget(self.results)
         oo = QPushButton("出力フォルダ（output）を開く")
         oo.setProperty("kind", "link")
+        oo.setToolTip(str(masking.OUTPUT_DIR))
         oo.clicked.connect(lambda: masking.open_folder(masking.OUTPUT_DIR))
         l5.addWidget(oo, 0, Qt.AlignLeft)
         v.addWidget(c5)
@@ -1630,6 +1634,15 @@ QSplitter::handle {{ background: {LINE}; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
 #toast {{ background: #1f2933; color: #ffffff; border-radius: 8px; padding: 10px 18px; }}
 #toast[err="1"] {{ background: #b91c1c; }}
+/* ラジオの印には手を出さない。Fusionが描くものが自然で、自前で描くと丸が四角くなる。
+   チェック欄だけは、白い下地の上で枠がほとんど見えないので指定する（実機で確認）。 */
+QRadioButton, QCheckBox {{ spacing: 6px; }}
+QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid #98a3b0;
+                        border-radius: 3px; background: #ffffff; }}
+QCheckBox::indicator:hover {{ border-color: {BLUE.name()}; }}
+QCheckBox::indicator:checked {{ border-color: {BLUE.name()}; background: {BLUE.name()};
+                                image: url("{CHECK_PNG}"); }}
+QCheckBox::indicator:disabled {{ border-color: #d3d9e0; background: #f6f8fa; }}
 QScrollBar:vertical {{ background: transparent; width: 11px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: #c3cbd5; border-radius: 5px; min-height: 26px; }}
 QScrollBar::handle:vertical:hover {{ background: #a7b0ba; }}
@@ -1638,13 +1651,44 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 """
 
 
+def light_palette() -> QPalette:
+    """明るい配色に固定する。
+
+    macOSやWindowsのダークモードでは、色を指定していない部品（ラジオ・チェックの印
+    など）だけが暗い配色のまま描かれ、明るい下地の上で黒く潰れる。この道具の画面は
+    白い紙を見るためのものなので、OSの設定によらず明るい側に揃える。
+    """
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor(BG))
+    pal.setColor(QPalette.WindowText, QColor(INK))
+    pal.setColor(QPalette.Base, QColor("#ffffff"))
+    pal.setColor(QPalette.AlternateBase, QColor("#f4f6f9"))
+    pal.setColor(QPalette.Text, QColor(INK))
+    pal.setColor(QPalette.PlaceholderText, QColor("#a7b0ba"))
+    pal.setColor(QPalette.Button, QColor("#ffffff"))
+    pal.setColor(QPalette.ButtonText, QColor(INK))
+    pal.setColor(QPalette.ToolTipBase, QColor("#ffffff"))
+    pal.setColor(QPalette.ToolTipText, QColor(INK))
+    pal.setColor(QPalette.Highlight, BLUE)
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    pal.setColor(QPalette.Link, BLUE)
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        pal.setColor(QPalette.Disabled, role, QColor("#a7b0ba"))
+    return pal
+
+
 def main() -> int:
     QApplication.setApplicationName(APP_NAME)
     QApplication.setApplicationDisplayName(APP_NAME)
     QApplication.setOrganizationName("zenryoku15pct")
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setPalette(light_palette())
     app.setStyleSheet(STYLE)
+    # Dock・タスクバー・窓のアイコン（実行ファイル版では同梱先から読む）
+    icon = masking.RES_DIR / "assets" / "icon.png"
+    if icon.exists():
+        app.setWindowIcon(QIcon(str(icon)))
     win = MainWindow()
     win.show()
     return app.exec()

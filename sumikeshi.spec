@@ -1,17 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 # スミケシのビルド設計図（PyInstaller）
 #
-# 1つの配布フォルダに2つの実行ファイルを同居させる：
-#   sumikeshi       … マスキング本体（起動するとブラウザが開く）
-#   sumikeshi-check … マスク後の全ページ自動検査（ダブルクリックで隣の output/ を検査）
-# ライブラリ（_internal）は共有するため、フォルダサイズは1本分＋α で済む。
+# 実行ファイルは1本だけ（sumikeshi）。マスキングも検査も、この1本の中の画面で行う。
+# v1系にあったコンソール版 sumikeshi-check は、アプリの「検査」画面に取り込んだ。
+#
+# console=False にしているのは配布物の体裁のため。黒い画面を背面に出さない。
+# そのぶん起動に失敗しても何も表示されないので、中核の生死は `sumikeshi --selftest`
+# （Qtを起動せずに走る自己診断）で確かめる。CIの動作確認もこれを使う。
 #
 # ビルド: pyinstaller --noconfirm --clean sumikeshi.spec
-# 出力  : dist/sumikeshi/
+# 出力  : dist/sumikeshi/            （Windows・Linux）
+#         dist/スミケシ.app          （macOS）
 
 import sys
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "2.0.0"
 
 # Windowsのexeに製品名・バージョン等の情報を埋め込む。
 # この情報が空のexeはウイルス対策ソフトの疑い度が上がる（誤検知対策の一環）。
@@ -39,46 +42,71 @@ def _win_version_info(description, original_filename):
         ],
     )
 
-a_app = Analysis(
-    ["app.py"],
-    datas=[("static", "static")],
-    noarchive=False,
-)
-a_chk = Analysis(
-    ["check_masked.py"],
+# 使わないQtの部品を落として配布サイズを抑える。
+# PySide6-Essentials の時点で付録（Addons）は入っていないので、ここは残りの整理。
+EXCLUDES = [
+    "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtQuickWidgets",
+    "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+    "PySide6.QtPdf", "PySide6.QtPdfWidgets",
+    "PySide6.QtSql", "PySide6.QtTest", "PySide6.QtDesigner", "PySide6.QtHelp",
+    "PySide6.QtWebSockets", "PySide6.QtWebChannel", "PySide6.QtSerialPort",
+    "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtPositioning",
+    "PySide6.QtSensors", "PySide6.QtSpatialAudio", "PySide6.QtTextToSpeech",
+    "PySide6.QtScxml", "PySide6.QtStateMachine", "PySide6.QtUiTools",
+    "PySide6.QtOpenGLWidgets", "PySide6.Qt3DCore",
+    "tkinter", "unittest", "pydoc", "doctest", "email", "http", "xmlrpc",
+]
+
+a = Analysis(
+    ["gui.py"],
+    datas=[
+        ("assets/icon.png", "assets"),
+        ("assets/check.png", "assets"),
+        # --selftest がどこでも走れるよう、お試し用PDFを同梱する
+        ("samples/ダミー調査票.pdf", "samples"),
+    ],
+    excludes=EXCLUDES,
     noarchive=False,
 )
 
-pyz_app = PYZ(a_app.pure)
-pyz_chk = PYZ(a_chk.pure)
+pyz = PYZ(a.pure)
 
-exe_app = EXE(
-    pyz_app,
-    a_app.scripts,
+exe = EXE(
+    pyz,
+    a.scripts,
     exclude_binaries=True,
     name="sumikeshi",
-    console=True,
+    console=False,                      # 背面に黒い画面を出さない
     disable_windowed_traceback=False,
+    icon="assets/icon.ico" if sys.platform == "win32" else None,
     version=_win_version_info(
         "sumikeshi - PDF masking tool with verification", "sumikeshi.exe"),
 )
-exe_chk = EXE(
-    pyz_chk,
-    a_chk.scripts,
-    exclude_binaries=True,
-    name="sumikeshi-check",
-    console=True,
-    disable_windowed_traceback=False,
-    version=_win_version_info(
-        "sumikeshi-check - masked PDF verification", "sumikeshi-check.exe"),
-)
 
 coll = COLLECT(
-    exe_app,
-    a_app.binaries,
-    a_app.datas,
-    exe_chk,
-    a_chk.binaries,
-    a_chk.datas,
+    exe,
+    a.binaries,
+    a.datas,
     name="sumikeshi",
 )
+
+# macOSは .app にする。これで初めて、Finderのダブルクリックで
+# ターミナルが開かずに立ち上がる。
+# LGPL（PySide6）の要件との関係でも、1ファイルにまとめる形（onefile）ではなく
+# Qtのライブラリが個別に置かれるこの形（onedir）を使う。差し替えの余地を残すため。
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="スミケシ.app",
+        icon="assets/icon.icns",
+        bundle_identifier="jp.zenryoku15pct.sumikeshi",
+        version=APP_VERSION,
+        info_plist={
+            "CFBundleName": "スミケシ",
+            "CFBundleDisplayName": "スミケシ",
+            "CFBundleShortVersionString": APP_VERSION,
+            "NSHighResolutionCapable": True,
+            "LSApplicationCategoryType": "public.app-category.productivity",
+            "NSHumanReadableCopyright": "Copyright (C) 2026 全力の15%  /  AGPL-3.0",
+        },
+    )

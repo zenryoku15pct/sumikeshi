@@ -4,7 +4,7 @@ rem Python の実行環境（.venv）を作り、必要なライブラリを入�
 cd /d "%~dp0"
 chcp 65001 >nul
 
-echo === PDFマスキングツール セットアップ（Windows）===
+echo === スミケシ セットアップ（Windows）===
 
 where py >nul 2>nul
 if %errorlevel%==0 (
@@ -37,5 +37,5 @@ echo 3/3 お試し用ダミーPDFを生成しています…
 .venv\Scripts\python make_dummy_sample.py
 
 echo.
-echo セットアップ完了。次からは「PDFマスクツール.bat」をダブルクリックで起動できます。
+echo セットアップ完了。次からは「スミケシ起動.bat」をダブルクリックで起動できます。
 pause
