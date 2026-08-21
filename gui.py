@@ -57,7 +57,8 @@ def selftest() -> int:
 if "--selftest" in sys.argv:
     raise SystemExit(selftest())
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
+                            QTimer, Signal)
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon, QImage,
                            QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
@@ -113,6 +114,17 @@ class DocEntry:
     page_range: str = ""
     parity: str = "all"
     _doc: object = None
+    # 読み込んだ瞬間のファイルの姿。実行の直前に見比べて、間に差し替えられて
+    # いないかを確かめる（差し替わっていると、画面で見た紙と塗る紙が別物になる）
+    stamp: tuple = ()
+
+    @staticmethod
+    def stamp_of(path: Path) -> tuple:
+        try:
+            st = path.stat()
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return ()
 
     def document(self):
         """表示用に開いたまま保持する。マスキングには使わない（そちらは読み直す）。"""
@@ -334,7 +346,10 @@ class PageCanvas(QWidget):
         p = self._to_norm(ev.position())
         hit = self._hit_test(p)
         if hit and hit["type"] == "handle":
-            self._action = {"type": "resize", "handle": hit["handle"]}
+            # 元の位置を控える。掴みが外から切られたときに戻せるようにするため
+            self._action = {"type": "resize", "handle": hit["handle"],
+                            "orig": dict(self.rects[hit["index"]])}
+            self.selected = hit["index"]
         elif hit and hit["type"] == "inside":
             self.selected = hit["index"]
             self._action = {"type": "move", "start": p, "orig": dict(self.rects[hit["index"]])}
@@ -347,6 +362,13 @@ class PageCanvas(QWidget):
 
     def mouseMoveEvent(self, ev):
         p = self._to_norm(ev.position())
+        # 左ボタンを押していないのに操作中になっているのは、掴みが外から
+        # 切られた（画面ロック・画面切り替え・他アプリに入力を取られた）とき。
+        # 拾わないと、指を離したつもりのカーソル移動だけで氏名欄の矩形が
+        # 付いてきて、ずれたまま塗られる（2026-08-21に実機で再現）
+        if self._action and not (ev.buttons() & Qt.LeftButton):
+            self._cancel_action()
+            return
         if not self._action:
             # 操作していない間はカーソル形状でヒントを出す
             if self.preview or self._pix is None:
@@ -384,6 +406,29 @@ class PageCanvas(QWidget):
             r = self.rects[self.selected]
             r["x0"], r["y0"], r["x1"], r["y1"] = nx, ny, nx + rw, ny + rh
         self.update()
+
+    def _cancel_action(self):
+        """操作を取り消して、始める前の位置・大きさへ戻す。
+
+        旧版はブラウザの pointercancel が同じ役目をしていた
+        （backup/static.20260821-2147/app.js の pointercancel）。
+        """
+        a = self._action
+        self._action = None
+        if not a:
+            return
+        if a["type"] == "draw":
+            self._drag = None                       # 描きかけは捨てる
+        elif a.get("orig") and 0 <= self.selected < len(self.rects):
+            self.rects[self.selected].update(a["orig"])   # 元へ戻す
+        self.rectsChanged.emit()
+        self.update()
+
+    def event(self, ev):
+        # マウスの掴みがOSから外れた合図。上と同じ理由で必ず後始末する
+        if ev.type() == QEvent.UngrabMouse and self._action:
+            self._cancel_action()
+        return super().event(ev)
 
     def mouseReleaseEvent(self, ev):
         if not self._action:
@@ -430,6 +475,47 @@ class PageCanvas(QWidget):
 
 
 # ---------------------------------------------------------------- 裏方の処理
+class BusyDialog(QProgressDialog):
+    """処理中に出す窓。**閉じられない**。
+
+    中止ボタンを外しただけでは、Escキーでも右上の×でも閉じてしまう。閉じると
+    本体の締め出しが解けて画面が触れる状態に戻り、そこで矩形を動かすと、
+    まだ塗っていないファイルが動かした後の位置で塗られる。検査も同じ矩形を
+    見るので「✓ 検査済み」のまま氏名が残る（2026-08-21に実機で再現）。
+    処理が終わるまで閉じさせない。
+    """
+
+    def __init__(self, text: str, total: int, parent=None):
+        super().__init__(text, "", 0, total, parent)
+        self._closable = False
+        self.setWindowTitle("スミケシ")
+        self.setCancelButton(None)
+        self.setWindowModality(Qt.WindowModal)
+        self.setMinimumDuration(0)
+        self.setAutoClose(False)
+        self.setAutoReset(False)
+        self.setValue(0)
+
+    def allow_close(self):
+        self._closable = True
+
+    def reject(self):          # Escキー・×ボタンの両方がここへ来る
+        if self._closable:
+            super().reject()
+
+    def closeEvent(self, ev):
+        if self._closable:
+            super().closeEvent(ev)
+        else:
+            ev.ignore()
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape and not self._closable:
+            ev.ignore()
+            return
+        super().keyPressEvent(ev)
+
+
 class MaskWorker(QThread):
     """マスキングを別スレッドで走らせる。画面が固まらないようにするため。"""
     progress = Signal(int, int, str)
@@ -446,6 +532,13 @@ class MaskWorker(QThread):
             self.progress.emit(i, len(self.jobs), job["name"])
             try:
                 data = job["path"].read_bytes()
+                # 読み込んだときと同じファイルか。取り込み直して同じ名前で
+                # 書き戻されていると、画面で見た紙と塗る紙が別物になる
+                now = DocEntry.stamp_of(job["path"])
+                if job.get("stamp") and now and now != job["stamp"]:
+                    raise ValueError(
+                        "読み込んだときからファイルが変わっています。"
+                        "いったん取り除いて、読み込み直してください")
                 results.append(masking.mask_one_file(
                     job["name"], data, job["rects"], self.color,
                     job["range"], job["parity"], job["pages"]))
@@ -1055,7 +1148,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 errors.append(p.name)
                 continue
-            self.entries.append(DocEntry(self._next_id, p, p.name, n))
+            self.entries.append(DocEntry(self._next_id, p, p.name, n,
+                                         stamp=DocEntry.stamp_of(p)))
             self._next_id += 1
             added += 1
         if self.ref_id is None and self.entries:
@@ -1457,8 +1551,17 @@ class MainWindow(QMainWindow):
 
     # ============================================================ 実行
     def run_masking(self):
-        jobs = [{"name": e.name, "path": e.path, "rects": e.rects,
-                 "range": e.page_range, "parity": e.parity, "pages": e.pages}
+        # 走っている最中に呼ばれたら何もしない。進捗の窓が閉じられた場合の保険
+        if self._mask_worker is not None and self._mask_worker.isRunning():
+            return
+        # 矩形は「写し」を渡す。画面の矩形そのものを渡すと、処理の最中に
+        # 動かした結果が、まだ塗っていないファイルへそのまま効いてしまう。
+        # 検査も同じ動いた矩形を見るので「✓ 検査済み」のまま氏名が残る
+        # （2026-08-21に実機で再現）。旧版は押した瞬間にJSONへ固めていた
+        jobs = [{"name": e.name, "path": e.path,
+                 "rects": [dict(r) for r in e.rects],
+                 "range": e.page_range, "parity": e.parity, "pages": e.pages,
+                 "stamp": e.stamp}
                 for e in self.entries]
         if not jobs:
             self.toast("PDFが読み込まれていません", True)
@@ -1466,12 +1569,7 @@ class MainWindow(QMainWindow):
         self.results.clear()
         self.apply_btn.setEnabled(False)
         self.apply_btn.setText("処理中…")
-        self._progress = QProgressDialog("マスキング中…", "", 0, len(jobs), self)
-        self._progress.setWindowTitle("マスキング")
-        self._progress.setCancelButton(None)          # 途中で止めない（書きかけを残さない）
-        self._progress.setWindowModality(Qt.WindowModal)
-        self._progress.setMinimumDuration(0)
-        self._progress.setValue(0)
+        self._progress = BusyDialog("マスキング中…", len(jobs), self)
         self._mask_worker = MaskWorker(jobs, self.mask_color())
         self._mask_worker.progress.connect(self._mask_progress)
         self._mask_worker.done.connect(self._mask_done)
@@ -1483,6 +1581,7 @@ class MainWindow(QMainWindow):
 
     def _mask_done(self, results):
         self._progress.setValue(self._progress.maximum())
+        self._progress.allow_close()
         self._progress.close()
         self.apply_btn.setText("マスキング実行（読み込んだ全PDF）")
         self.update_apply_button()
@@ -1689,7 +1788,25 @@ def main() -> int:
     icon = masking.RES_DIR / "assets" / "icon.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
-    win = MainWindow()
+    # console=False にしたので、起動に失敗しても画面には何も出ない。
+    # 「ダブルクリックしても反応しない」で終わらせず、理由を必ず見せる
+    try:
+        win = MainWindow()
+    except Exception:
+        import traceback
+        detail = traceback.format_exc()
+        try:
+            (masking.BASE_DIR / "起動エラー.txt").write_text(detail, encoding="utf-8")
+        except Exception:
+            pass
+        QMessageBox.critical(
+            None, f"{APP_NAME}を起動できません",
+            f"{APP_NAME}の起動に失敗しました。\n\n"
+            f"作業フォルダ: {masking.BASE_DIR}\n\n"
+            "アプリを書き込めない場所（アプリケーションフォルダなど）に置いている場合は、"
+            "書類フォルダなどへ移してからもう一度お試しください。\n\n"
+            f"詳しい内容:\n{detail[-1200:]}")
+        return 1
     win.show()
     return app.exec()
 

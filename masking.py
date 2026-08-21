@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -70,7 +71,18 @@ def _writable_base() -> Path:
         near = exe.parent
     if _can_write(near):
         return near
-    return Path.home() / "Documents" / "スミケシ"
+    # ここへ来るのは「アプリを書き込めない場所に置いた」場合。逃がし先は
+    # **作ってから**返す。作らずに返すと、起動時に必ず通る presets/ の作成が
+    # 親フォルダ不在で失敗し、画面が出ないまま終わる（黒い画面が無いので
+    # 利用者には「反応しない」としか見えない。2026-08-21に実機で再現）
+    home = Path.home() / "Documents" / "スミケシ"
+    if _can_write(home):
+        return home
+    # 書類フォルダにも書けない環境（読み取り専用の持ち出し用プロファイル等）。
+    # ここまで来たら一時フォルダで動かす。出力の場所は画面から辿れる
+    tmp = Path(tempfile.gettempdir()) / "sumikeshi"
+    _can_write(tmp)
+    return tmp
 
 
 BASE_DIR = _writable_base()
@@ -276,6 +288,19 @@ def mask_one_file(name: str, data: bytes, rects_raw, color: str,
     rects = clean_rects(rects_raw)
     if not rects:  # 矩形未設定のファイルはスキップ（エラーにしない）
         return {"skipped": True, "name": name}
+
+    # 塗る紙（data）と、呼び出し側が数えたページ数（n_pages）が食い違っていないか。
+    # 食い違うのは「読み込んだあと、実行するまでの間に原本が差し替わった」とき。
+    # 見逃すと、増えたページは塗られず検査もされないまま「✓ 検査済み」で出てしまう
+    # （2026-08-21に実機で再現。4→8ページの差し替えで5〜8ページの氏名が残った）。
+    # 位置合わせの前提も崩れているので、続けずに止めるのが安全。
+    with fitz.open(stream=data, filetype="pdf") as _d:
+        real_pages = _d.page_count
+    if real_pages != n_pages:
+        raise ValueError(
+            f"読み込んだときから中身が変わっています（{n_pages}ページ→{real_pages}ページ）。"
+            "いったん取り除いて、読み込み直してください")
+
     pages = parse_page_spec(page_range, parity, n_pages)
     if not pages:
         raise ValueError("指定範囲に該当するページがありません")
@@ -293,7 +318,7 @@ def mask_one_file(name: str, data: bytes, rects_raw, color: str,
         if check["verdict"] == "ok":
             check["verdict"] = "warn"
 
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = unique_out_path(name)
     # 一時ファイルへ書いてから名前を付け替える。書いている途中で
     # 強制終了されても、中途半端なPDFが完成品の顔で残らない
@@ -316,7 +341,7 @@ def safe_preset_name(name: str) -> str:
 
 
 def list_presets() -> list[dict]:
-    PRESET_DIR.mkdir(exist_ok=True)
+    PRESET_DIR.mkdir(parents=True, exist_ok=True)
     presets = []
     for p in sorted(PRESET_DIR.glob("*.json")):
         try:
@@ -340,7 +365,7 @@ def save_preset(name: str, rects_raw, color: str, page_range: str, parity: str) 
         "parity": parity or "all",
         "saved": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
-    PRESET_DIR.mkdir(exist_ok=True)
+    PRESET_DIR.mkdir(parents=True, exist_ok=True)
     path = PRESET_DIR / f"{name}.json"
     if path.exists():  # 上書き時は旧ファイルを trash/ に退避
         _to_trash(path)
@@ -355,7 +380,7 @@ def delete_preset(name: str) -> None:
 
 
 def _to_trash(path: Path) -> None:
-    TRASH_DIR.mkdir(exist_ok=True)
+    TRASH_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     shutil.move(str(path), str(TRASH_DIR / f"{path.name}.{ts}.bak"))
 
@@ -363,7 +388,7 @@ def _to_trash(path: Path) -> None:
 # ---------------------------------------------------------------- その他
 def open_folder(path: Path) -> None:
     """OSごとのファイル管理アプリでフォルダを開く（macOS / Windows / Linux）。"""
-    path.mkdir(exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
     elif sys.platform == "win32":
