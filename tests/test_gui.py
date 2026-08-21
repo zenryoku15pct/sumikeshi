@@ -213,8 +213,12 @@ outs = list(masking.OUTPUT_DIR.glob("*_masked*.pdf"))
 check("PDFが1本書き出された", len(outs) == 1, str([p.name for p in outs]))
 check("結果欄に検査済みと出る", "検査済み" in html)
 check("矩形未設定はスキップと出る", "スキップ" in html)
-check("範囲外の注意書きが出る", "指定した範囲の中だけ" in html)
-check("元ファイルの注意書きが出る", "元ファイルはこのツールでは移動・削除されません" in html)
+# 2026-08-22：この2つの注意書きは結果欄（高さの決まった箱）から、実行カードの
+# 常設ラベルへ移した。複数ファイル処理時に箱の下へ隠れる問題への対処（監査⑤）。
+# 常に表示されるので毎回のトースト等は不要——ラベルの中身を直接見る
+warn_text = win.warn.text()
+check("範囲外の注意書きが出る（常設ラベル）", "塗った範囲の中だけ" in warn_text)
+check("元ファイルの注意書きが出る（常設ラベル）", "移動・削除されません" in warn_text)
 check("原本を書き換えていない", a.read_bytes() == src.read_bytes())
 
 print("\n【10】ファイルの取り除き")

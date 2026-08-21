@@ -89,6 +89,10 @@ BASE_DIR = _writable_base()
 OUTPUT_DIR = BASE_DIR / "output"
 PRESET_DIR = BASE_DIR / "presets"
 TRASH_DIR = BASE_DIR / "trash"
+# 検査レポートは output/ には置かない。output/ は「人に渡すフォルダ」であり、
+# レポートにはファイル名とスキャナが埋めた作成者名などがそのまま載るため、
+# フォルダごと渡す運用だと気づかないまま同梱されてしまう（2026-08-21の監査）
+REPORT_DIR = BASE_DIR / "検査レポート"
 
 # check_masked.py は単体のコマンドとしても動くので、自前で置き場所を決めている。
 # アプリの中から使うときは、こちらが決めた場所に揃えておく（.app の内部を指したまま

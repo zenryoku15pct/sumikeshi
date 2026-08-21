@@ -59,6 +59,7 @@ if "--selftest" in sys.argv:
 
 from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
                             QTimer, Signal)
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QGuiApplication, QIcon,
                            QImage, QKeySequence, QPainter, QPalette, QPen, QPixmap,
                            QShortcut)
@@ -628,9 +629,12 @@ class HoverRow(QWidget):
         super().leaveEvent(ev)
 
 
-def small_btn(text: str, tip: str = "") -> QPushButton:
+def small_btn(text: str, tip: str = "", danger: bool = False) -> QPushButton:
     b = QPushButton(text)
-    b.setProperty("kind", "icon")
+    # 矩形を消す✕は「危険」side。マスキング漏れに直結するため、旧版と同じく
+    # ホバー時だけでなく平常時から赤にして、押す前に危険だと分かるようにする
+    # （2026-08-21の監査：灰色へ後退していたため、消えたことに気づきにくかった）
+    b.setProperty("kind", "iconDanger" if danger else "icon")
     b.setFixedSize(QSize(22, 22))
     b.setCursor(Qt.PointingHandCursor)
     if tip:
@@ -834,11 +838,11 @@ class CheckDialog(QDialog):
             f"検査済み {len(results)} ファイル　—　合格 {n_ok} / 要確認 {n_warn} / <b>不合格 {n_ng}</b>"
             f"　（マスク領域＝{esc(source)}）")
         try:
-            masking.OUTPUT_DIR.mkdir(exist_ok=True)
+            masking.REPORT_DIR.mkdir(parents=True, exist_ok=True)
             from datetime import datetime as _dt
-            out = masking.OUTPUT_DIR / f"検査レポート_{_dt.now():%Y%m%d-%H%M%S}.md"
+            out = masking.REPORT_DIR / f"検査レポート_{_dt.now():%Y%m%d-%H%M%S}.md"
             out.write_text(ck.build_report(results, 8, source), encoding="utf-8")
-            self.report_lb.setText(f"レポート: output/{out.name}")
+            self.report_lb.setText(f"レポート: 検査レポート/{out.name}（渡すフォルダの外）")
         except Exception as e:
             self.report_lb.setText(f"レポートを書けませんでした: {e}")
 
@@ -857,6 +861,7 @@ class MainWindow(QMainWindow):
         self.page = 1
         self._next_id = 1
         self.clipboard = None      # 矩形のコピー＆貼り付け用
+        self._undo_delete = None   # 直前に削除した矩形（⌘Z / Ctrl+Z で戻す）
         self._mask_worker = None
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
@@ -1083,6 +1088,21 @@ class MainWindow(QMainWindow):
         self.results.setMinimumHeight(170)
         self.results.setOpenExternalLinks(False)
         l5.addWidget(self.results)
+        # 機械が見ているのは「指定した範囲の中が消えたか」だけ。範囲の外にある
+        # 氏名（別欄の保護者署名など）や、置き場所を間違えた矩形は判定できない。
+        # 黙っていると「✓＝安全」と誤解される。
+        # 旧版はこの文言を結果一覧の直後に置いていて、出力フォルダを開いて配布へ
+        # 進む動線が必ずこの上を通った。新版の結果欄は高さの決まった箱なので、
+        # 2ファイル以上だと箱の中に隠れてしまう（2026-08-21の監査）。
+        # 箱の外へ出して、スクロールに関わらず必ず目に入るようにする。
+        self.warn = QLabel(
+            "⚠ 検査は<b>塗った範囲の中だけ</b>を見ています。押さえるべき欄がすべて"
+            "入っているかは、できあがったPDFを目で確かめてください。<br>"
+            "⚠ マスク前の元ファイルはこのツールでは移動・削除されません。"
+            "所定の場所への隔離、または不要なら削除を忘れずに。")
+        self.warn.setWordWrap(True)
+        self.warn.setProperty("kind", "caution")
+        l5.addWidget(self.warn)
         oo = QPushButton("出力フォルダ（output）を開く")
         oo.setProperty("kind", "link")
         oo.setToolTip(str(masking.OUTPUT_DIR))
@@ -1331,7 +1351,7 @@ class MainWindow(QMainWindow):
             lb = QLabel(f"矩形{i + 1}（幅{w:.1f}% × 高さ{ht:.1f}%）")
             lb.setAttribute(Qt.WA_TransparentForMouseEvents, True)   # 行に通す
             h.addWidget(lb, 1)
-            rm = small_btn("✕", "この矩形を削除")
+            rm = small_btn("✕", "この矩形を削除", danger=True)
             rm.clicked.connect(lambda _=False, k=i: self.delete_rect(k))
             h.addWidget(rm)
             item = QListWidgetItem()
@@ -1463,7 +1483,9 @@ class MainWindow(QMainWindow):
         elif k == Qt.Key_Right:
             self.step_page(1)
         elif k in (Qt.Key_Delete, Qt.Key_Backspace) and self.canvas.selected >= 0:
-            self.canvas.delete_selected()
+            self.delete_rect(self.canvas.selected)
+        elif ev.matches(QKeySequence.Undo):
+            self.undo_delete_rect()
         elif k == Qt.Key_Escape and self.canvas.selected >= 0:
             self.canvas.selected = -1
             self.canvas.selectionChanged.emit()
@@ -1473,16 +1495,41 @@ class MainWindow(QMainWindow):
         return True
 
     def delete_rect(self, i):
+        """矩形一覧の✕・Deleteキーの両方がここを通る（取り消しを一箇所で効かせるため）。"""
         e = self.current()
         if not e or not (0 <= i < len(e.rects)):
             return
-        e.rects.pop(i)
+        removed = e.rects.pop(i)
         if self.canvas.selected == i:
             self.canvas.set_selected(-1)
         elif self.canvas.selected > i:
             self.canvas.set_selected(self.canvas.selected - 1)
         self.after_rects_change()
         self.canvas.update()
+        # マスキング漏れに直結する操作なので、直後なら⌘Zで戻せるようにする
+        # （2026-08-21の監査：確認も取り消しも無かった）
+        self._undo_delete = {"doc_id": e.doc_id, "index": i, "rect": removed}
+        self.toast(f"矩形{i + 1}を削除しました（⌘Z / Ctrl+Z で元に戻せます）")
+
+    def undo_delete_rect(self):
+        u = self._undo_delete
+        if not u:
+            self.toast("元に戻せる削除はありません", True)
+            return
+        e = self.find(u["doc_id"])
+        if not e:
+            self.toast("元に戻せません（そのファイルは取り除かれています）", True)
+            self._undo_delete = None
+            return
+        i = min(u["index"], len(e.rects))
+        e.rects.insert(i, dict(u["rect"]))
+        self._undo_delete = None
+        if e.doc_id == self.ref_id:
+            self.canvas.set_rects(e.rects)
+            self.canvas.set_selected(i)
+        self.after_rects_change()
+        self.canvas.update()
+        self.toast(f"矩形{i + 1}を元に戻しました")
 
     def clear_rects(self):
         e = self.current()
@@ -1726,17 +1773,6 @@ class MainWindow(QMainWindow):
                 any_done = True
                 rows.append(f'<div style="color:#b91c1c;margin:3px 0">'
                             f'✕ {esc(r["name"])}: {esc(r.get("error", ""))}</div>')
-        if any_done:
-            # 機械が見ているのは「指定した範囲の中が消えたか」だけ。範囲の外にある
-            # 氏名（別欄の保護者署名など）や、そもそも置き場所を間違えた矩形は
-            # 判定できない。ここを黙っていると「✓＝安全」と誤解される
-            rows.append(
-                '<div style="margin-top:8px;padding:8px;background:#fff7ed;'
-                'border:1px solid #fed7aa;color:#7c2d12">'
-                '⚠ 検査は<b>指定した範囲の中だけ</b>を見ています。押さえるべき欄がすべて'
-                '入っているかは、できあがったPDFを目で確かめてください。<br>'
-                '⚠ マスク前の元ファイルはこのツールでは移動・削除されません。'
-                '所定の場所への隔離、または不要なら削除を忘れずに。</div>')
         return f'<div style="font-size:12px;line-height:1.5">{"".join(rows)}</div>'
 
     def open_check(self):
@@ -1793,6 +1829,9 @@ QLabel[kind="cardTitle"] {{ font-size: 14px; font-weight: 700; }}
 QLabel[kind="step"] {{ background: {BLUE.name()}; color: #ffffff; border-radius: 10px;
                        font-weight: 700; font-size: 12px; }}
 QLabel[kind="hint"] {{ color: {MUTED}; font-size: 12px; }}
+QLabel[kind="caution"] {{ background: #fff7ed; border: 1px solid #fed7aa;
+                          color: #7c2d12; border-radius: 6px; padding: 8px;
+                          font-size: 12px; }}
 QLabel[kind="badge"] {{ background: #e0edff; color: #1d4ed8; border-radius: 8px;
                         padding: 1px 7px; font-size: 11px; font-weight: 700; }}
 QLabel[kind="badgeZero"] {{ background: #eef1f5; color: #8b95a1; border-radius: 8px;
@@ -1810,6 +1849,8 @@ QPushButton[kind="primary"]:hover {{ background: #1d4ed8; }}
 QPushButton[kind="primary"]:disabled {{ background: #c3cbd5; border-color: #c3cbd5; color: #ffffff; }}
 QPushButton[kind="icon"] {{ border: none; background: transparent; color: #9aa5b1; padding: 0; }}
 QPushButton[kind="icon"]:hover {{ color: #b91c1c; background: #fdecec; border-radius: 11px; }}
+QPushButton[kind="iconDanger"] {{ border: none; background: transparent; color: {RED.name()}; padding: 0; }}
+QPushButton[kind="iconDanger"]:hover {{ color: #ffffff; background: {RED.name()}; border-radius: 11px; }}
 QPushButton[kind="link"] {{ border: none; background: transparent; color: {BLUE.name()};
                             padding: 2px 0; text-align: left; }}
 QPushButton[kind="link"]:hover {{ color: #1d4ed8; text-decoration: underline; }}
@@ -1871,6 +1912,28 @@ def light_palette() -> QPalette:
     return pal
 
 
+def _claim_single_instance(base_dir: Path) -> QLocalServer | None:
+    """同じ作業フォルダを使う2本目の起動を止める。
+
+    先着が QLocalServer で名前を占有し、後発は connect が通ることで気づく。
+    先着が異常終了して名前だけ残っている場合（Unixのソケットファイルの残骸）は
+    removeServer() で掃除してから取り直す。
+    """
+    import hashlib
+    name = "sumikeshi-" + hashlib.sha256(str(base_dir).encode("utf-8")).hexdigest()[:16]
+
+    probe = QLocalSocket()
+    probe.connectToServer(name)
+    if probe.waitForConnected(200):
+        probe.close()
+        return None                      # 本当に誰かが使っている
+
+    QLocalServer.removeServer(name)       # 残骸の掃除（居なければ何もしない）
+    server = QLocalServer()
+    server.listen(name)
+    return server
+
+
 def main() -> int:
     QApplication.setApplicationName(APP_NAME)
     QApplication.setApplicationDisplayName(APP_NAME)
@@ -1883,6 +1946,20 @@ def main() -> int:
     icon = masking.RES_DIR / "assets" / "icon.png"
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
+    # 二重起動の防止。同じ作業フォルダ（output/・presets/）を2つの窓が
+    # 共有すると、出力名がぶつかって片方が消えたり、古いプリセットで
+    # 塗ってしまったりする（2026-08-21の監査）。旧版はポートの占有で検出して
+    # いたが、画面アプリにはポートが無いので、ローカルソケットで同じ役目をする。
+    # 名前は作業フォルダ（BASE_DIR）ごとに変える——違う場所に置いた2本は
+    # output/・presets/ を共有しないので、同時に動いても問題ない。
+    server = _claim_single_instance(masking.BASE_DIR)
+    if server is None:
+        QMessageBox.information(
+            None, APP_NAME,
+            f"{APP_NAME}はすでに起動しています。\n\n"
+            "開いているウィンドウをお使いください。\n"
+            "見当たらないときは、Dock（Windowsはタスクバー）から前面に出せます。")
+        return 0
     # console=False にしたので、起動に失敗しても画面には何も出ない。
     # 「ダブルクリックしても反応しない」で終わらせず、理由を必ず見せる
     try:
@@ -1903,7 +1980,9 @@ def main() -> int:
             f"詳しい内容:\n{detail[-1200:]}")
         return 1
     win.show()
-    return app.exec()
+    code = app.exec()
+    server.close()          # 名前を手放す。次の起動がすぐ通るように
+    return code
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ sys.argv = ["gui.py"]
 
 from PySide6.QtCore import QEvent, QPointF, Qt          # noqa: E402
 from PySide6.QtGui import QMouseEvent                    # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 import gui        # noqa: E402
 import masking    # noqa: E402
@@ -332,6 +332,71 @@ check("退避先が実際に作られている", (deep / "trash").is_dir())
 check("_writable_base の逃がし先は作ってから返す仕様になっている",
       "mkdir(parents=True" in (BASE / "masking.py").read_text(encoding="utf-8")
       and "_can_write(home)" in (BASE / "masking.py").read_text(encoding="utf-8"))
+
+# ================================================================ 原因E
+print("\n【原因E】矩形の✕は赤く、消してもすぐ戻せる（2026-08-22の設計判断）")
+work_e = TMP / "E"
+work_e.mkdir(exist_ok=True)
+fe = work_e / "答案.pdf"
+shutil.copy(SRC, fe)
+win.clear_docs()
+win.add_files([fe])
+pump()
+e = win.entries[0]
+e.rects = [dict(NAME_BOX), {"x0": .1, "y0": .5, "x1": .3, "y1": .6}]
+win.after_rects_change()
+pump()
+
+btn_kind = win.rect_list.itemWidget(win.rect_list.item(0)).findChild(QPushButton).property("kind")
+check("矩形一覧の✕は平常時から赤（iconDanger）", btn_kind == "iconDanger", str(btn_kind))
+
+win.delete_rect(0)                      # 氏名欄の矩形を✕で消す
+pump()
+check("削除した矩形は一覧から消える", len(e.rects) == 1)
+check("氏名欄の矩形は消えている（残っているのは2つ目だけ）",
+      abs(e.rects[0]["x0"] - .1) < 1e-9, str(e.rects))
+
+win.undo_delete_rect()                  # ⌘Z 相当
+pump()
+check("⌘Zで直後に元へ戻る", len(e.rects) == 2 and abs(e.rects[0]["x0"] - NAME_BOX["x0"]) < 1e-9,
+      str(e.rects))
+
+win.undo_delete_rect()                  # 二度目は戻すものが無い
+check("戻すものが無ければ何も壊れない", len(e.rects) == 2)
+
+# 削除→ファイルを切り替え→戻す、を試す（対象が居なくなっている場合の安全確認）
+win.delete_rect(0)
+pump()
+win.clear_docs()
+win.undo_delete_rect()
+check("削除後にファイルが無くなっても、戻そうとして落ちない（例外を出さない）", True)
+
+# ================================================================ 原因F
+print("\n【原因F】二重起動：同じ作業フォルダを2つ目が使えない")
+work_f = TMP / "F"
+work_f.mkdir(exist_ok=True)
+
+srv1 = gui._claim_single_instance(work_f)
+check("1つ目は名前を取れる", srv1 is not None)
+srv2 = gui._claim_single_instance(work_f)
+check("2つ目は取れない（同じ作業フォルダ）", srv2 is None)
+if srv1:
+    srv1.close()
+srv3 = gui._claim_single_instance(work_f)
+check("1つ目が終われば、次はまた取れる", srv3 is not None)
+if srv3:
+    srv3.close()
+
+work_g = TMP / "G"
+work_g.mkdir(exist_ok=True)
+srv4 = gui._claim_single_instance(work_f)
+srv5 = gui._claim_single_instance(work_g)
+check("違う作業フォルダなら、同時に取れる（共有していないので問題ない）",
+      srv4 is not None and srv5 is not None)
+if srv4:
+    srv4.close()
+if srv5:
+    srv5.close()
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + "=" * 60)
