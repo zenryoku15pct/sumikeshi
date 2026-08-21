@@ -16,6 +16,7 @@ test_gui.py は全項目を通してしまっていた。ここでは順番を�
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import fitz
@@ -112,27 +113,41 @@ for e in win.entries:
 win.after_rects_change()
 fresh_output()
 
-win.run_masking()
-pump(2)
-jobs = win._mask_worker.jobs
-# 処理が走っている最中に、画面の矩形を氏名欄から遠くへ動かす
-for e in win.entries:
-    e.rects[0].update({"x0": .05, "y0": .80, "x1": .30, "y1": .88})
-check("裏方へ渡した矩形は写しで、画面をいじっても変わらない",
-      all(abs(j["rects"][0]["x0"] - NAME_BOX["x0"]) < 1e-9 for j in jobs),
-      str(jobs[0]["rects"][0]))
-w_before = win._mask_worker
-win.run_masking()                      # 走行中の二度押し
-check("処理中に実行を呼んでも二重に走らない（裏方が入れ替わらない）",
-      win._mask_worker is w_before)
+# ダミーPDFは4ページと小さく、実際の処理そのものが一瞬で終わる。
+# 「処理中であること」を確実に試すため、この試験の間だけ1ファイルごとに
+# わずかな間を置く（実処理の中身は変えない・待つだけ）
+_real_mask_one_file = masking.mask_one_file
+def _slow_mask_one_file(*a, **kw):
+    time.sleep(0.15)
+    return _real_mask_one_file(*a, **kw)
+masking.mask_one_file = _slow_mask_one_file
+try:
+    win.run_masking()
+    # 二度押しの検証は、間に pump() を挟まず「1回目を呼んだ直後」に行う
+    w_before = win._mask_worker
+    win.run_masking()                      # 走行中の二度押し（のつもり）
+    check("処理中に実行を呼んでも二重に走らない（裏方が入れ替わらない）",
+          win._mask_worker is w_before)
+    pump(2)
+    check("この時点でまだ処理中である（試験の前提の確認）",
+          win._mask_worker is not None and win._mask_worker.isRunning())
+    jobs = win._mask_worker.jobs
+    # 処理が走っている最中に、画面の矩形を氏名欄から遠くへ動かす
+    for e in win.entries:
+        e.rects[0].update({"x0": .05, "y0": .80, "x1": .30, "y1": .88})
+    check("裏方へ渡した矩形は写しで、画面をいじっても変わらない",
+          all(abs(j["rects"][0]["x0"] - NAME_BOX["x0"]) < 1e-9 for j in jobs),
+          str(jobs[0]["rects"][0]))
 
-prog = win._progress
-prog.reject()                       # Escキーと同じ経路
-prog.close()                        # ×ボタンと同じ経路
-pump()
-check("進捗の窓はEscでも×でも閉じない", prog.isVisible(), f"visible={prog.isVisible()}")
+    prog = win._progress
+    prog.reject()                       # Escキーと同じ経路
+    prog.close()                        # ×ボタンと同じ経路
+    pump()
+    check("進捗の窓はEscでも×でも閉じない", prog.isVisible(), f"visible={prog.isVisible()}")
 
-check("処理が終わるまで待てた", wait_worker(win._mask_worker))
+    check("処理が終わるまで待てた", wait_worker(win._mask_worker))
+finally:
+    masking.mask_one_file = _real_mask_one_file
 pump(8)
 outs = sorted(masking.OUTPUT_DIR.glob("*_masked.pdf"))
 check("4本とも書き出された", len(outs) == 4, str([p.name for p in outs]))

@@ -59,8 +59,9 @@ if "--selftest" in sys.argv:
 
 from PySide6.QtCore import (QEvent, QPointF, QRectF, QSize, Qt, QThread,
                             QTimer, Signal)
-from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon, QImage,
-                           QKeySequence, QPainter, QPalette, QPen, QPixmap, QShortcut)
+from PySide6.QtGui import (QAction, QColor, QCursor, QFont, QGuiApplication, QIcon,
+                           QImage, QKeySequence, QPainter, QPalette, QPen, QPixmap,
+                           QShortcut)
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
                                QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -127,9 +128,16 @@ class DocEntry:
             return ()
 
     def document(self):
-        """表示用に開いたまま保持する。マスキングには使わない（そちらは読み直す）。"""
+        """表示用。**原本のファイルは掴まない。**
+
+        パスから開くと、そのPDFをアプリが開きっぱなしになる。Windowsでは
+        開いている間そのファイルを移動・削除できないため、実行後に結果欄が
+        促す「元ファイルの隔離・削除」が、促した当のアプリに塞がれてしまう
+        （2026-08-21の監査で判明）。バイト列を写してから開けば掴まない。
+        写しは表示中の1本ぶんだけ持ち、切り替えたら手放す（switch_doc）。
+        """
         if self._doc is None:
-            self._doc = fitz.open(self.path)
+            self._doc = fitz.open(stream=self.path.read_bytes(), filetype="pdf")
         return self._doc
 
     def close(self):
@@ -563,6 +571,8 @@ class CheckWorker(QThread):
         import check_masked as ck
         results = []
         for i, f in enumerate(self.files, 1):
+            if self.isInterruptionRequested():   # 窓を閉じられた。切り上げる
+                return
             self.progress.emit(i, len(self.files), f.name)
             try:
                 results.append(ck.check_file(f, self.rects_norm, self.opt, None, True))
@@ -595,6 +605,27 @@ class ElidedLabel(QLabel):
         p.setPen(self.palette().windowText().color())
         p.drawText(self.rect(), Qt.AlignVCenter | Qt.AlignLeft,
                    fm.elidedText(self._full, Qt.ElideMiddle, self.width()))
+
+
+class HoverRow(QWidget):
+    """マウスが乗ったことを知らせる行。
+
+    一覧の項目にウィジェットを敷くと、その下（viewport）までマウスの動きが
+    届かず itemEntered が飛ばない（2026-08-21に実測）。旧版は一覧の行に
+    マウスを乗せるとページ上の該当矩形が青くなったので、行そのものに
+    知らせてもらってその挙動を戻す。
+    """
+    hovered = Signal(bool)
+
+    def enterEvent(self, ev):
+        self.hovered.emit(True)
+        super().enterEvent(ev)
+
+    def leaveEvent(self, ev):
+        # 子（✕ボタン）へ移っただけのときは離れたことにしない
+        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            self.hovered.emit(False)
+        super().leaveEvent(ev)
 
 
 def small_btn(text: str, tip: str = "") -> QPushButton:
@@ -660,6 +691,7 @@ class CheckDialog(QDialog):
         self.setWindowTitle("マスク済みPDFの検査")
         self.resize(760, 560)
         self._worker = None
+        self._closing = False
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 16, 16, 16)
         v.setSpacing(10)
@@ -716,6 +748,20 @@ class CheckDialog(QDialog):
         bottom.addWidget(close)
         v.addLayout(bottom)
 
+    def closeEvent(self, ev):
+        """検査の最中に閉じられたときの後始末。
+
+        裏方を走らせたまま窓を捨てると、アプリ終了時に異常終了する
+        （QThread: Destroyed while thread is still running・2026-08-21に実測）。
+        切り上げを頼んで、終わるのを待ってから閉じる。
+        """
+        w = self._worker
+        if w is not None and w.isRunning():
+            self._closing = True
+            w.requestInterruption()
+            w.wait(5000)
+        super().closeEvent(ev)
+
     def _pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "検査するフォルダを選ぶ", self.folder.text())
         if d:
@@ -746,6 +792,10 @@ class CheckDialog(QDialog):
 
     def _show(self, results, source):
         import check_masked as ck
+        if self._closing:
+            # 窓は閉じられている。見てもらえない結果を画面に描いても、
+            # 本人が見ていないレポートを output/ に増やしても意味がない
+            return
         self.run_btn.setEnabled(True)
         self.run_btn.setText("検査する")
         marks = {ck.OK: ("✓ 合格", "#0b7a44"), ck.NG: ("✕ 不合格", "#b91c1c"),
@@ -1191,6 +1241,9 @@ class MainWindow(QMainWindow):
     def switch_doc(self, doc_id):
         if doc_id == self.ref_id:
             return
+        prev = self.current()
+        if prev is not None:
+            prev.close()          # 表示に使っていた写しを手放す（覚え続けない）
         self.ref_id = doc_id
         self.page = 1
         self.canvas.set_selected(-1)
@@ -1263,17 +1316,21 @@ class MainWindow(QMainWindow):
         e = self.current()
         rects = e.rects if e else []
         for i, r in enumerate(rects):
-            row = QWidget()
+            row = HoverRow()
+            row.hovered.connect(lambda on, k=i: self.canvas.set_hover(k if on else -1))
             h = QHBoxLayout(row)
             h.setContentsMargins(8, 4, 6, 4)
             h.setSpacing(6)
             sw = QLabel()
             sw.setFixedSize(QSize(12, 12))
             sw.setProperty("kind", "swatch")
+            sw.setAttribute(Qt.WA_TransparentForMouseEvents, True)
             h.addWidget(sw)
             w = (r["x1"] - r["x0"]) * 100
             ht = (r["y1"] - r["y0"]) * 100
-            h.addWidget(QLabel(f"矩形{i + 1}（幅{w:.1f}% × 高さ{ht:.1f}%）"), 1)
+            lb = QLabel(f"矩形{i + 1}（幅{w:.1f}% × 高さ{ht:.1f}%）")
+            lb.setAttribute(Qt.WA_TransparentForMouseEvents, True)   # 行に通す
+            h.addWidget(lb, 1)
             rm = small_btn("✕", "この矩形を削除")
             rm.clicked.connect(lambda _=False, k=i: self.delete_rect(k))
             h.addWidget(rm)
@@ -1376,7 +1433,44 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, ev):
         if obj is self.rect_list.viewport() and ev.type() == ev.Type.Leave:
             self.canvas.set_hover(-1)
+        elif ev.type() == QEvent.KeyPress and self._global_key(ev):
+            return True
         return super().eventFilter(obj, ev)
+
+    def _global_key(self, ev) -> bool:
+        """画面のどこを触っていてもキーが効くようにする。
+
+        旧版はブラウザ全体でキーを拾い、文字の入力欄とプルダウンにいるときだけ
+        素通りさせていた。新版は受け皿がページ表示部だけだったため、サイドバーの
+        ボタンや一覧を一度触ると Delete・←→・Esc・⌘C・⌘V が丸ごと効かなくなり、
+        画面に書いてある「Deleteキーで削除」が嘘になっていた（2026-08-21に実測）。
+        """
+        if QApplication.activeWindow() is not self:
+            return False                      # 別の窓が前にいるときは触らない
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QComboBox)):
+            return False                      # 文字を打っている最中は奪わない
+        k = ev.key()
+        if ev.matches(QKeySequence.Copy):
+            # 画面の文字を選んでいるときは、そちらのコピーを優先する（旧版と同じ）
+            if isinstance(w, QTextBrowser) and w.textCursor().hasSelection():
+                return False
+            self.copy_rects()
+        elif ev.matches(QKeySequence.Paste):
+            self.paste_rects()
+        elif k == Qt.Key_Left:
+            self.step_page(-1)
+        elif k == Qt.Key_Right:
+            self.step_page(1)
+        elif k in (Qt.Key_Delete, Qt.Key_Backspace) and self.canvas.selected >= 0:
+            self.canvas.delete_selected()
+        elif k == Qt.Key_Escape and self.canvas.selected >= 0:
+            self.canvas.selected = -1
+            self.canvas.selectionChanged.emit()
+            self.canvas.update()
+        else:
+            return False
+        return True
 
     def delete_rect(self, i):
         e = self.current()
@@ -1673,6 +1767,7 @@ class MainWindow(QMainWindow):
     def showEvent(self, ev):
         super().showEvent(ev)
         self.rect_list.viewport().installEventFilter(self)
+        QApplication.instance().installEventFilter(self)
 
     def closeEvent(self, ev):
         if self._mask_worker is not None and self._mask_worker.isRunning():
