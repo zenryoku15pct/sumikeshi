@@ -363,6 +363,7 @@ def check_page(doc, page, rects_norm, opt):
         res["reasons"].append(
             "マスクの痕跡が見つからない"
             + ("（白で塗った場合は --preset か --rects で領域を指定）" if res["detected"] else ""))
+
         res["n_layers"] = len(page.get_image_info())
         return res
 
@@ -420,6 +421,17 @@ def check_page(doc, page, rects_norm, opt):
         if RANK[WARN] > RANK[res["verdict"]]:
             res["verdict"] = WARN
         res["reasons"].append("マスク領域に重なる画像レイヤーが無い")
+
+    # 自動検出は「自分で見つけた黒を自分で確かめる」形なので、素の判定では必ず
+    # 合格が出る（見出しに黒帯のある未処理スキャンが全ページ✅になるのを実測・
+    # 2026-08-22）。自動検出で判定したページは、良くても「要確認」までとする。
+    # ※この格下げは全項目の検査が終わった後に行うこと。途中に置くと後続の
+    #   検査を飛ばす（[1]を飛ばして黒四角重ねを見逃しかけた・2026-08-23）
+    if res["detected"] and res["verdict"] == OK:
+        res["verdict"] = WARN
+        res["reasons"].append(
+            "マスク領域を自動検出で判定（合格の保証にはならない。"
+            "枠を指定して検査し直してください）")
     return res
 
 
@@ -434,14 +446,26 @@ def check_file(path: Path, rects_norm, opt, pages_spec, quiet):
         return out
 
     try:
-        # ---- [0] 処理痕跡（メタデータ・XMP）
+        # ---- [0] 処理痕跡（メタデータ・XMP・処理済みの印）
         md = doc.metadata or {}
         left = {k: v for k, v in md.items()
                 if k in ("title", "author", "subject", "keywords", "creator", "producer") and v}
+        # スミケシが出力に残す処理済みの印（producer・個人情報を含まない）は
+        # 「残存メタデータ」に数えない。むしろ無いことが未処理の合図になる
+        # （以前はメタデータが空の未処理PDF——束の分割・抽出で普通にできる——が
+        # ここを素通りしていた。2026-08-22の総ざらい）
+        mark = left.pop("producer", "") if str(left.get("producer", "")).startswith("sumikeshi ") else ""
         xmp = doc.xref_xml_metadata()
         has_xmp = bool(xmp) if not isinstance(xmp, int) else xmp > 0
         out["meta_left"] = left
         out["has_xmp"] = has_xmp
+        out["tool_mark"] = mark
+        if not left and not has_xmp and not mark:
+            if RANK[out["verdict"]] < RANK[WARN]:
+                out["verdict"] = WARN
+            out["file_reasons"].append(
+                "処理済みの印が無い（このツールを通っていない疑い。"
+                "v2.0.0より前の出力にも印はありません）")
         if left or has_xmp:
             out["verdict"] = NG
             detail = "・".join(f"{k}={v[:40]!r}" for k, v in left.items()) or ""
@@ -498,10 +522,11 @@ def build_report(results, tol, rects_source) -> str:
     L = [f"# マスク済みPDF 自動検査レポート", "",
          f"- 検査日時：{now}", f"- マスク領域：{rects_source}",
          f"- 均一判定の許容幅：{tol}（0〜255。再圧縮のにじみを見込んだ値）", "",
-         "> **「合格」は、指定したマスク領域の内側について漏れの兆候が無かった、という意味です。**",
-         "> 用紙全体の保証ではありません。マスク領域の外（枠からのはみ出し・別欄の氏名・",
-         "> 保護者署名・緊急連絡先など）は検査していません。押さえるべき欄がすべて",
-         "> プリセットに入っているかは、用紙の現物を見て人が判断してください。", ""]
+         "> **このレポートが保証するのは、指定したマスク枠の内側だけです。**",
+         "> 用紙全体の安全証明ではなく、外部に出してよいかの判断にも、事故調査の",
+         "> 根拠にも使えません。マスク枠の外（はみ出し・別欄の氏名・保護者署名・",
+         "> 緊急連絡先・自由記述の中の名前）と**ファイル名**は検査していません。",
+         "> 押さえるべき欄がすべて枠に入っているかは、用紙の現物を見て人が判断してください。", ""]
 
     L += ["## 総括", "", "|ファイル|ページ数|判定|不合格|要確認|", "|-|-|-|-|-|"]
     for r in results:
@@ -550,6 +575,11 @@ def build_report(results, tol, rects_source) -> str:
             if len(bad_pages) > 40:
                 L.append(f"- （ほか{len(bad_pages) - 40}ページ）")
             L.append("")
+    L += ["---", "",
+          "> 再掲：このレポートは指定したマスク枠の内側だけの判定です。用紙全体の",
+          "> 安全証明ではありません。被害範囲の認定・提出可否の判断には、必ず現物との",
+          "> 照合を併せてください。", "",
+          f"（sumikeshi 検査レポート）"]
     return "\n".join(L)
 
 
@@ -665,6 +695,7 @@ def main():
         if RANK[r["verdict"]] > RANK[worst]:
             worst = r["verdict"]
     print("=" * 64)
+    print("※「合格」＝枠内クリア。枠の外とファイル名は見ていません")
 
     if not args.no_report:
         REPORT_DIR.mkdir(parents=True, exist_ok=True)

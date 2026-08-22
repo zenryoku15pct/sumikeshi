@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""旧ブラウザ版（app.py）が出していた結果を「正解」として固定する。
+"""マスキング中核の出力を「正解」として固定する。
+
+v2.0.0 では旧ブラウザ版（app.py）から採取し、移植で挙動が変わっていないことの
+証明に使った。v2.0.1 のリリース前総ざらいで中核へ**意図した変更**を入れたため
+（処理済みの印＝producer・線画の除去・持ち物落とし）、正解は現行 masking.py の
+出力へ更新した。以後この golden が崩れたら「意図しない変化」を疑う。
+
+再生成: python3 tests/make_golden.py masking.py
+
 
 v2.0.0 でマスキング中核を masking.py へ切り出したとき、旧版と一致することを
 確かめた。その一致を後々まで保てるよう、旧版の出力から取った値を golden.json に
@@ -41,7 +49,10 @@ CASES = [
 
 # PyMuPDF は保存のたびに新しい文書ID（PDFトレーラの /ID）を書く。中身の違いでは
 # ないので、比較の前に伏せる。これを除いた全バイトが一致すれば同一とみなす。
-_ID = re.compile(rb"/ID\s*\[\s*<[0-9A-Fa-f]*>\s*<[0-9A-Fa-f]*>\s*\]")
+# IDの値は16進形式 <...> のほかに、生バイト文字列 (...) 形式で書かれることも
+# ある（乱数の中身しだい・2026-08-23に実測）。両方の形を伏せる
+_S = rb"(?:<[0-9A-Fa-f]*>|\((?:[^\\()]|\\.)*\))"
+_ID = re.compile(rb"/ID\s*\[\s*" + _S + rb"\s*" + _S + rb"\s*\]")
 
 
 def digest(pdf_bytes: bytes) -> str:
@@ -60,13 +71,16 @@ def collect(mod, sample: Path) -> list[dict]:
         blank = mod.find_blank_rects(data, rects, pages)
         pdf = mod.apply_masks(data, rects, color, pages)
         check = mod.verify_masked(pdf, rects, pages)
+        # サイズも文書IDを伏せた後で数える。IDが生バイト文字列 (...) 形式で
+        # 書かれた回はエスケープの都合で生の長さが数バイト揺れる（2026-08-23実測）
         out.append({"label": label, "pages": pages, "blank": blank,
-                    "verdict": check["verdict"], "size": len(pdf), "sha256": digest(pdf)})
+                    "verdict": check["verdict"], "size": len(_ID.sub(b"/ID[<>x<>]", pdf)),
+                    "sha256": digest(pdf)})
     return out
 
 
 if __name__ == "__main__":
-    src = Path(sys.argv[1]) if len(sys.argv) > 1 else BASE / "app.py"
+    src = Path(sys.argv[1]) if len(sys.argv) > 1 else BASE / "masking.py"
     sys.path.insert(0, str(src.parent))
     mod = __import__(src.stem)
     sample = BASE / "samples/ダミー調査票.pdf"

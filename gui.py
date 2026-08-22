@@ -566,12 +566,15 @@ class CheckWorker(QThread):
     progress = Signal(int, int, str)
     done = Signal(list, str)
 
-    def __init__(self, files: list, rects_norm, source: str, opt: dict):
+    def __init__(self, files: list, rects_norm, source: str, opt: dict,
+                 page_range: str = "", parity: str = "all"):
         super().__init__()
         self.files = files
         self.rects_norm = rects_norm
         self.source = source
         self.opt = opt
+        self.page_range = page_range
+        self.parity = parity
 
     def run(self):
         import check_masked as ck
@@ -581,7 +584,14 @@ class CheckWorker(QThread):
                 return
             self.progress.emit(i, len(self.files), f.name)
             try:
-                results.append(ck.check_file(f, self.rects_norm, self.opt, None, True))
+                # ページ範囲・奇数偶数はファイルごとにページ数が違うので、その場で解決する。
+                # 範囲を絞った仕事（両面スキャンの奇数ページのみ等）をそのまま検査できる
+                # 口が無いと、正しい仕事に毎回✕が出る（2026-08-22の総ざらい）
+                spec = None
+                if (self.page_range or "").strip() or self.parity != "all":
+                    with fitz.open(f) as _d:
+                        spec = masking.parse_page_spec(self.page_range, self.parity, _d.page_count)
+                results.append(ck.check_file(f, self.rects_norm, self.opt, spec, True))
             except Exception as e:
                 # 1本の異常PDFで他ファイルの結果まで失わない
                 results.append({"path": f, "verdict": ck.WARN, "pages": [],
@@ -695,12 +705,13 @@ class CheckDialog(QDialog):
     判定そのものは check_masked.py をそのまま呼ぶ。ここは表示だけを受け持つ。
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, screen_rects=None, screen_range="", screen_parity="all"):
         super().__init__(parent)
         self.setWindowTitle("マスク済みPDFの検査")
-        self.resize(760, 560)
+        self.resize(760, 600)
         self._worker = None
         self._closing = False
+        self._screen_rects = [dict(r) for r in (screen_rects or [])]
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 16, 16, 16)
         v.setSpacing(10)
@@ -720,17 +731,40 @@ class CheckDialog(QDialog):
         row2 = QHBoxLayout()
         row2.addWidget(QLabel("マスク範囲:"))
         self.rect_src = QComboBox()
-        self.rect_src.addItem("自動検出（塗りつぶしを探す）", None)
+        # 画面に矩形が読み込まれていればそれを既定にする。プリセットを保存して
+        # いない人の選択肢が「自動検出」しか無い状態を無くす（2026-08-22の総ざらい）
+        if self._screen_rects:
+            self.rect_src.addItem(f"いま画面の矩形（{len(self._screen_rects)}件）",
+                                  {"rects": self._screen_rects, "range": screen_range,
+                                   "parity": screen_parity})
         for p in masking.list_presets():
             self.rect_src.addItem(f"プリセット「{p['name']}」（矩形{len(p.get('rects', []))}件）",
-                                  p.get("rects", []))
-        self.rect_src.setToolTip("白で塗った場合は自動検出できないため、プリセットで範囲を指定してください")
+                                  {"rects": p.get("rects", []), "range": p.get("range", ""),
+                                   "parity": p.get("parity", "all")})
+        self.rect_src.addItem("自動検出（塗りつぶしを探す・要確認どまり）", None)
+        self.rect_src.setToolTip(
+            "白で塗った場合は自動検出できません。自動検出は「自分で見つけた黒を自分で"
+            "確かめる」形になるため、結果は良くても要確認どまりです")
+        self.rect_src.currentIndexChanged.connect(self._rect_src_changed)
         row2.addWidget(self.rect_src, 1)
         self.run_btn = QPushButton("検査する")
         self.run_btn.setProperty("kind", "primary")
         self.run_btn.clicked.connect(self._run)
         row2.addWidget(self.run_btn)
         v.addLayout(row2)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("検査するページ（空欄＝全ページ）:"))
+        self.range_edit = QLineEdit()
+        self.range_edit.setPlaceholderText("例: 2-30, 35")
+        row3.addWidget(self.range_edit, 1)
+        self.parity_box = QComboBox()
+        for label, val in (("すべてのページ", "all"),
+                           ("奇数ページのみ", "odd"), ("偶数ページのみ", "even")):
+            self.parity_box.addItem(label, val)
+        row3.addWidget(self.parity_box)
+        v.addLayout(row3)
+        self._rect_src_changed(self.rect_src.currentIndex())
 
         self.summary = QLabel("")
         self.summary.setProperty("kind", "hint")
@@ -740,7 +774,7 @@ class CheckDialog(QDialog):
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["ファイル / ページ", "判定", "内容"])
         self.tree.setColumnWidth(0, 300)
-        self.tree.setColumnWidth(1, 70)
+        self.tree.setColumnWidth(1, 118)   # 「✓ 枠内クリア」が切れない幅
         self.tree.setAlternatingRowColors(True)
         v.addWidget(self.tree, 1)
 
@@ -773,6 +807,14 @@ class CheckDialog(QDialog):
             w.wait(5000)
         super().done(result)
 
+    def _rect_src_changed(self, _idx):
+        """マスク範囲の選択が変わったら、そこに記録されたページ範囲を既定として写す。"""
+        d = self.rect_src.currentData()
+        if isinstance(d, dict):
+            self.range_edit.setText(d.get("range", ""))
+            k = self.parity_box.findData(d.get("parity", "all"))
+            self.parity_box.setCurrentIndex(max(0, k))
+
     def _pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "検査するフォルダを選ぶ", self.folder.text())
         if d:
@@ -791,15 +833,20 @@ class CheckDialog(QDialog):
         if not files:
             QMessageBox.information(self, "検査", "このフォルダにPDFがありません。")
             return
-        rects = self.rect_src.currentData()
+        data = self.rect_src.currentData()
+        rects = data["rects"] if isinstance(data, dict) else None
         source = "自動検出" if rects is None else self.rect_src.currentText()
-        opt = {"tolerance": 8, "inset": 2, "detect_white": False, "allow_text_outside": False}
+        # allow_text_outside は実行時の自動検査と同じ True。枠の外の文字層は
+        # 「消し残し」ではなく紙の本文なので、✕の理由にしない（以前は実行時と
+        # 検査画面で判定が食い違い、正しい仕事に毎回✕が出ていた）
+        opt = {"tolerance": 8, "inset": 2, "detect_white": False, "allow_text_outside": True}
         self.tree.clear()
         self.summary.setText("")
         self.report_lb.setText("")
         self.run_btn.setEnabled(False)
         self.run_btn.setText("検査中…")
-        self._worker = CheckWorker(files, rects, source, opt)
+        self._worker = CheckWorker(files, rects, source, opt,
+                                   self.range_edit.text(), self.parity_box.currentData())
         self._worker.progress.connect(
             lambda i, n, name: self.summary.setText(f"検査中… {i}/{n}　{name}"))
         self._worker.done.connect(self._show)
@@ -813,7 +860,9 @@ class CheckDialog(QDialog):
             return
         self.run_btn.setEnabled(True)
         self.run_btn.setText("検査する")
-        marks = {ck.OK: ("✓ 合格", "#0b7a44"), ck.NG: ("✕ 不合格", "#b91c1c"),
+        # ✓に「合格」「検査済み」の顔をさせない。手順書や口伝えに乗るのはこの
+        # ラベルだけで、「＝この紙は安全」に化けるのが誤用の第1位だった（2026-08-22）
+        marks = {ck.OK: ("✓ 枠内クリア", "#0b7a44"), ck.NG: ("✕ 消え残りあり", "#b91c1c"),
                  ck.WARN: ("⚠ 要確認", "#a16207")}
         n_ok = n_ng = n_warn = 0
         for r in results:
@@ -846,7 +895,7 @@ class CheckDialog(QDialog):
                 n_warn += 1
                 top.setExpanded(True)
         self.summary.setText(
-            f"検査済み {len(results)} ファイル　—　合格 {n_ok} / 要確認 {n_warn} / <b>不合格 {n_ng}</b>"
+            f"検査 {len(results)} ファイル　—　枠内クリア {n_ok} / 要確認 {n_warn} / <b>消え残り {n_ng}</b>"
             f"　（マスク領域＝{esc(source)}）")
         try:
             masking.REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1842,6 +1891,7 @@ class MainWindow(QMainWindow):
         self._progress.setValue(self._progress.maximum())
         self._progress.allow_close()
         self._progress.close()
+        self._write_run_record(results)
         self.apply_btn.setText("マスキング実行（読み込んだ全PDF）")
         self.update_apply_button()
         self.results.setHtml(self._results_html(results))
@@ -1864,6 +1914,37 @@ class MainWindow(QMainWindow):
         else:
             self.toast(f"完了: {ok} ファイルを検査まで通しました"
                        + (f"（矩形未設定 {skip} 件はスキップ）" if skip else ""))
+
+    def _write_run_record(self, results):
+        """その回の判定を 検査レポート/ へ1本残す。
+
+        以前は結果欄が唯一の記録で、次の実行の冒頭で消えていた。処理した人と
+        持ち出す人が別人の共有PCでは、判定を確かめる術が無かった（2026-08-22）。
+        """
+        try:
+            from datetime import datetime as _dt
+            masking.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+            lines = ["# マスキング実行の記録", "",
+                     f"- 日時：{_dt.now():%Y-%m-%d %H:%M}",
+                     f"- 塗りつぶし色：{'黒' if self.mask_color() == 'black' else '白'}", "",
+                     "> ✓（枠内クリア）は、指定した枠の内側について消え残りが見つからなかった、",
+                     "> という意味です。枠の外・対象外にしたページ・ファイル名は見ていません。", "",
+                     "|ファイル|判定|出力|内容|", "|-|-|-|-|"]
+            for r in results:
+                if r.get("skipped"):
+                    lines.append(f"|{r['name']}|−|—|矩形未設定のためスキップ|")
+                elif r.get("ok"):
+                    c = r.get("check") or {}
+                    label = {"ok": "✓ 枠内クリア", "warn": "⚠ 要確認",
+                             "ng": "✕ 消え残りあり"}.get(c.get("verdict"), "?")
+                    reasons = "／".join(c.get("reasons") or []) or "—"
+                    lines.append(f"|{r['name']}|{label}|output/{r['output']}|{reasons}|")
+                else:
+                    lines.append(f"|{r['name']}|✕ 失敗|—|{r.get('error', '')}|")
+            out = masking.REPORT_DIR / f"実行記録_{_dt.now():%Y%m%d-%H%M%S}.md"
+            out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass   # 記録が書けなくても本処理の結果は変えない
 
     @staticmethod
     def _results_html(results) -> str:
@@ -1895,7 +1976,7 @@ class MainWindow(QMainWindow):
                                 f'（{pages_note}・要確認）</div>{out}{detail}')
                 else:
                     rows.append(f'<div style="color:#0b7a44;margin:3px 0">✓ {esc(r["name"])}'
-                                f'（{pages_note}・検査済み）</div>{out}')
+                                f'（{pages_note}・枠内クリア）</div>{out}')
             else:
                 any_done = True
                 rows.append(f'<div style="color:#b91c1c;margin:3px 0">'
@@ -1903,7 +1984,11 @@ class MainWindow(QMainWindow):
         return f'<div style="font-size:12px;line-height:1.5">{"".join(rows)}</div>'
 
     def open_check(self):
-        CheckDialog(self).exec()
+        e = self.current()
+        CheckDialog(self,
+                    screen_rects=(e.rects if e else None),
+                    screen_range=(e.page_range if e else ""),
+                    screen_parity=(e.parity if e else "all")).exec()
 
     # ============================================================ 通知
     def toast(self, msg: str, error: bool = False):

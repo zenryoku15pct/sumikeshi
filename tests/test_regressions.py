@@ -4,7 +4,7 @@
     QT_QPA_PLATFORM=offscreen python3 tests/test_regressions.py
 
 2026-08-21 の監査で、旧ブラウザ版には無かった事故が9件見つかった。うち6件は
-**氏名が読めるPDFが「✓ 検査済み」で出てくる**という、この道具が唯一防ぎたい形。
+**氏名が読めるPDFが緑の✓で出てくる**という、この道具が唯一防ぎたい形。
 どれも「順番が乱れたとき」にだけ起きるので、素直な順番しか試さない
 test_gui.py は全項目を通してしまっていた。ここでは順番を乱して当てる。
 
@@ -179,7 +179,7 @@ html = win.results.toHtml()
 # 差し替えは2つの網で捕まえる。控え（大きさと更新時刻）のほうが先に気づくので、
 # 出る文言はそちら。どちらの網で止まっても「塗らずに止める」が守れていればよい
 check("ページ数が増えていたら✕で止まる（緑の✓を出さない）",
-      "検査済み" not in html
+      "枠内クリア" not in html
       and ("変わっています" in html or "変わっています" in html.replace("&#22793;", "変")),
       html[-400:].replace("\n", " ")[:260])
 check("止まったので出力は残らない", not list(masking.OUTPUT_DIR.glob("*_masked.pdf")))
@@ -213,7 +213,7 @@ pump(8)
 html2 = win.results.toHtml()
 check("差し替えを見分けられている（控えが変わっている）", before != after, f"{before} vs {after}")
 check("同ページ数の差し替えでも✕で止まる",
-      "検査済み" not in html2 and "ファイルが変わっています" in html2,
+      "枠内クリア" not in html2 and "ファイルが変わっています" in html2,
       html2[-500:].replace("\n", " ")[:300])
 check("止まったので出力は残らない", not list(masking.OUTPUT_DIR.glob("*_masked.pdf")))
 
@@ -229,7 +229,7 @@ win.run_masking()
 wait_worker(win._mask_worker)
 pump(8)
 outs = list(masking.OUTPUT_DIR.glob("*_masked.pdf"))
-check("差し替えが無ければ従来どおり通る", len(outs) == 1 and "検査済み" in win.results.toHtml(),
+check("差し替えが無ければ従来どおり通る", len(outs) == 1 and "枠内クリア" in win.results.toHtml(),
       win.results.toHtml()[-300:].replace("\n", " "))
 check("氏名欄が消えている", outs and name_box_range(outs[0], 1) == 0)
 

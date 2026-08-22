@@ -215,7 +215,7 @@ pump(8)
 html = win.results.toHtml()
 outs = list(masking.OUTPUT_DIR.glob("*_masked*.pdf"))
 check("PDFが1本書き出された", len(outs) == 1, str([p.name for p in outs]))
-check("結果欄に検査済みと出る", "検査済み" in html)
+check("結果欄に枠内クリアと出る（✓に「検査済み」の顔をさせない）", "枠内クリア" in html and "検査済み" not in html)
 check("矩形未設定はスキップと出る", "スキップ" in html)
 # 2026-08-22：この2つの注意書きは結果欄（高さの決まった箱）から、実行カードの
 # 常設ラベルへ移した。複数ファイル処理時に箱の下へ隠れる問題への対処（監査⑤）。
@@ -235,6 +235,7 @@ check("実行ボタンが押せなくなる", not win.apply_btn.isEnabled())
 
 print("\n【11】漏れサンプルの検査（見逃していないか）")
 leak = BASE / "samples/leak-check"
+RECT_LEAK = {"x0": 0.5418, "y0": 0.1080, "x1": 0.9273, "y1": 0.1825}
 if not leak.is_dir():
     print("  --  漏れサンプルが無いので省略（python3 make_leak_samples.py で作れます）")
 else:
@@ -251,14 +252,34 @@ else:
     pump(8)
     txt = d.summary.text()
     n_files = len(list(leak.glob("*.pdf")))
-    n_ng = sum(1 for i in range(d.tree.topLevelItemCount())
-               if "不合格" in d.tree.topLevelItem(i).text(1))
-    n_ok = sum(1 for i in range(d.tree.topLevelItemCount())
-               if "合格" in d.tree.topLevelItem(i).text(1) and "不合格" not in d.tree.topLevelItem(i).text(1))
+    def count(label):
+        return sum(1 for i in range(d.tree.topLevelItemCount())
+                   if label in d.tree.topLevelItem(i).text(1))
     check("全ファイルを検査した", d.tree.topLevelItemCount() == n_files, txt)
-    check("正常な1本だけ合格", n_ok == 1, f"合格 {n_ok} 件")
-    check("漏れのある残りを不合格にした", n_ng == n_files - 1, f"不合格 {n_ng} 件")
+    # 自動検出は「自分で見つけた黒を自分で確かめる」形なので、正常品でも
+    # 枠内クリアを出さない（要確認どまり・2026-08-23の設計判断）
+    check("自動検出では枠内クリアを出さない", count("枠内クリア") == 0,
+          f'枠内クリア {count("枠内クリア")} 件')
+    check("漏れのある6本は消え残りありになる", count("消え残り") == n_files - 1,
+          f'消え残り {count("消え残り")} 件')
     d.close()
+    # 枠を指定すれば、正常な1本だけが枠内クリアになる
+    d2 = gui.CheckDialog(screen_rects=[dict(RECT_LEAK)])
+    d2.folder.setText(str(leak))
+    d2.show(); pump()
+    d2._run()
+    for _ in range(1500):
+        app.processEvents()
+        if d2._worker and not d2._worker.isRunning():
+            break
+        app.thread().msleep(20)
+    pump(8)
+    def count2(label):
+        return sum(1 for i in range(d2.tree.topLevelItemCount())
+                   if label in d2.tree.topLevelItem(i).text(1))
+    check("枠を指定すれば正常な1本だけ枠内クリア", count2("枠内クリア") == 1,
+          f'枠内クリア {count2("枠内クリア")} 件')
+    d2.close()
 
 shutil.rmtree(tmp, ignore_errors=True)
 for f in masking.OUTPUT_DIR.glob("*_masked*.pdf"):

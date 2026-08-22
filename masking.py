@@ -13,6 +13,7 @@ app.py（ブラウザ版）から移設した。実機テストとセキュリ�
     スミケシ（sumikeshi）  Copyright (C) 2026 全力の15%
     zenryoku15@gmail.com  /  ライセンス: GNU AGPL-3.0（LICENSE 参照）
 """
+import hashlib
 import io
 import json
 import os
@@ -102,6 +103,12 @@ _ck.BASE_DIR = BASE_DIR
 _ck.OUTPUT_DIR = OUTPUT_DIR
 _ck.PRESET_DIR = PRESET_DIR
 _ck.REPORT_DIR = REPORT_DIR
+
+# 出力PDFに残す「処理済みの印」。個人情報を含まない1項目（producer）で、
+# 検査が「印が無い＝このツールを通っていない疑い」を確実に捕まえられるようにする。
+# src: は原本のSHA-256の先頭16桁（中身は復元できない指紋）。同じ原本を塗り直した
+# ときに、古い出力を見分けて退避するのに使う
+TOOL_MARK = "sumikeshi 2.0.0"
 
 RENDER_DPI = 150
 MAX_RENDER_WIDTH = 2200  # 表示用レンダリングの最大幅(px)
@@ -256,9 +263,13 @@ def apply_masks(data: bytes, rects: list[dict], color: str, page_numbers: list[i
             page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
                                   graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED)
         # メタデータの除去: スキャナが埋め込むタイトル・作成者等に
-        # 個人情報が含まれる場合があるため、標準メタデータとXMPを消去する
+        # 個人情報が含まれる場合があるため、標準メタデータとXMPを消去する。
+        # そのうえで処理済みの印だけを残す（個人情報を含まない・検査[0]が
+        # 「印なし＝未処理の疑い」を出せるようにする・2026-08-23の設計判断）
         doc.set_metadata({})
         doc.del_xml_metadata()
+        src16 = hashlib.sha256(data).hexdigest()[:16]
+        doc.set_metadata({"producer": f"{TOOL_MARK} src:{src16}"})
         # ページの絵として描かれない持ち物も落とす。生徒別のPDFを結合した束は
         # 元のファイル名（＝氏名）がしおりの見出しになり、どのビューアでも
         # サイドバーに出る（実在の142ページ束で人名114件が素通りした・2026-08-22実測）。
@@ -405,17 +416,48 @@ def verify_masked(out_bytes: bytes, rects: list[dict], page_numbers: list[int]) 
     }
 
 
-def unique_out_path(name: str) -> Path:
+def _mark_of(path: Path) -> str:
+    """出力PDFの処理済みの印（producer）を読む。読めなければ空文字。"""
+    try:
+        with fitz.open(path) as d:
+            return (d.metadata or {}).get("producer") or ""
+    except Exception:
+        return ""
+
+
+def unique_out_path(name: str, verdict: str = "ok", src16: str = "") -> Path:
+    """出力の置き場を決める。output/ の中身は「枠内クリアの最新版だけ」にする
+    （2026-08-23の設計判断）。
+
+    - 枠内クリア（ok）は output/ 直下の「元名_masked.pdf」
+    - 要確認・消え残り（warn/ng）は output/要確認/ の「元名_masked_要確認.pdf」。
+      合格品と同じ顔で並ぶと、判定が画面と一緒に消えたあとで見分けられない
+      （処理した人と持ち出す人が別人の共有PCでは、道具が見つけた消え残りが
+      そのまま出て行く・2026-08-22の総ざらい）
+    - 同じ原本を塗り直したときは、古い出力（印の src: が一致するもの）を
+      trash/ へ退避して素の名前を最新版に譲る。以前は古い失敗版が正規の名前を
+      占有し続け、直した方が長い名前になっていた
+    """
+    if verdict == "ok":
+        base_dir, suffix = OUTPUT_DIR, "_masked"
+    else:
+        base_dir, suffix = OUTPUT_DIR / "要確認", "_masked_要確認"
+    base_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(name).stem
-    path = OUTPUT_DIR / f"{stem}_masked.pdf"
-    if not path.exists():
-        return path
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = OUTPUT_DIR / f"{stem}_masked_{ts}.pdf"
-    i = 1
-    while path.exists():
-        path = OUTPUT_DIR / f"{stem}_masked_{ts}_{i}.pdf"
-        i += 1
+    path = base_dir / f"{stem}{suffix}.pdf"
+    if path.exists():
+        old_mark = _mark_of(path)
+        if src16 and f"src:{src16}" in old_mark:
+            _to_trash(path)          # 同じ原本の古い出力＝退避して名前を譲る
+        else:
+            # 別の原本の出力（別フォルダの同名PDF）か、印の無い旧版の出力。
+            # 同一と確認できないものは消さず、従来どおり日時つきの名前で並べる
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            path = base_dir / f"{stem}{suffix}_{ts}.pdf"
+            i = 1
+            while path.exists():
+                path = base_dir / f"{stem}{suffix}_{ts}_{i}.pdf"
+                i += 1
     return path
 
 
@@ -497,16 +539,19 @@ def mask_one_file(name: str, data: bytes, rects_raw, color: str,
             check["verdict"] = "warn"
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = unique_out_path(name)
+    src16 = hashlib.sha256(data).hexdigest()[:16]
+    out_path = unique_out_path(name, check["verdict"], src16)
     # 一時ファイルへ書いてから名前を付け替える。書いている途中で
     # 強制終了されても、中途半端なPDFが完成品の顔で残らない
     tmp_path = out_path.with_suffix(".pdf.part")
     tmp_path.write_bytes(out_bytes)
     os.replace(tmp_path, out_path)
+    rel_out = str(out_path.relative_to(OUTPUT_DIR)) if out_path.is_relative_to(OUTPUT_DIR) \
+        else out_path.name
     return {
         "ok": True,
         "name": name,
-        "output": out_path.name,
+        "output": rel_out,
         "pagesMasked": len(pages),
         "totalPages": n_pages,
         "excludedPages": len(excluded),

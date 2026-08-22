@@ -4,7 +4,7 @@
 check_masked.py が漏れを本当に捕まえられるかを確かめるための負の対照サンプル。
 samples/ダミー調査票.pdf（make_dummy_sample.py で生成）から7本を生成する。
 
-  01 正常                  … 正しくリダクション済み          → 合格すべき
+  01 正常                  … スミケシ本体で処理（印つき）    → 枠内クリアになるべき
   02 黒四角を重ねただけ    … 見た目は黒塗り・画像は無傷      → [1]で落ちるべき
   03 テキスト層が残る      … OCR文字がマスク領域に残存        → [2]で落ちるべき
   04 注釈で黒塗り          … 注釈は剥がせる                   → [1][3]で落ちるべき
@@ -55,9 +55,15 @@ def save(doc, name: str, clear_meta=True):
 
 
 def make_01_ok():
-    doc = fitz.open(SRC)
-    redact(doc)
-    save(doc, "01_正常_リダクション済み.pdf")
+    # 正常品は本体と同じ処理で作る（処理済みの印つき）。自前の redact で作ると
+    # 印が無く、新しい検査[0]が「未処理の疑い」を出すのが正しい動きになる
+    import masking
+    data = SRC.read_bytes()
+    with fitz.open(stream=data, filetype="pdf") as d:
+        pages = list(range(1, d.page_count + 1))
+    out = masking.apply_masks(data, [RECT], "black", pages)
+    (OUT_DIR / "01_正常_リダクション済み.pdf").write_bytes(out)
+    print("  作成: 01_正常_リダクション済み.pdf")
 
 
 def make_02_overlay_only():

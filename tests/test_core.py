@@ -70,7 +70,7 @@ def main() -> int:
     print("  OK  不正な入力はきちんと弾く" if not fails else "")
 
     print("\n" + "=" * 56)
-    print("中核は旧版と同じ結果を出しています。" if not fails
+    print("中核は固定した正解と同じ結果を出しています。" if not fails
           else f"外れた項目 {len(fails)} 件: {fails}")
     return 1 if fails else 0
 
