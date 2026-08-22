@@ -50,6 +50,9 @@ FROZEN = getattr(sys, "frozen", False)
 BASE_DIR = (Path(sys.executable) if FROZEN else Path(__file__)).resolve().parent
 PRESET_DIR = BASE_DIR / "presets"
 OUTPUT_DIR = BASE_DIR / "output"
+# レポートは output/（人に渡すフォルダ）には書かない。レポートにはファイル名
+# （氏名が入り得る）と元メタデータの値が平文で載るため、渡す物と分けて置く
+REPORT_DIR = BASE_DIR / "検査レポート"
 
 
 def _mark(sym: str, alt: str) -> str:
@@ -283,26 +286,71 @@ def check_page(doc, page, rects_norm, opt):
     unrot = [fitz.Rect(d) * page.derotation_matrix for d in disp]
 
     # ---- [3] 注釈
-    annots = list(page.annots() or [])
-    res["n_annots"] = len(annots)
-    if annots:
-        kinds = sorted({a.type[1] for a in annots})
+    # page.annots() は Link・Popup・Widget（フォーム入力欄）と独自の種類を列挙しない
+    # （2026-08-22に実測。独自サブタイプの注釈が氏名を抱えたまま「注釈0件」で合格した）。
+    # 数はPDFの生の /Annots 配列から取り、種類名は列挙できた分だけ添える
+    n_annots = 0
+    val = doc.xref_get_key(page.xref, "Annots")
+    if val[0] == "array":
+        n_annots = val[1].count("R")          # "12 0 R 15 0 R" の参照数
+        if n_annots == 0 and val[1].strip("[] \n"):
+            n_annots = 1                       # 直接埋め込まれた辞書など
+    elif val[0] not in ("null", ""):
+        n_annots = 1
+    res["n_annots"] = n_annots
+    if n_annots:
+        kinds = sorted({a.type[1] for a in (page.annots() or [])})
+        detail = f"（{', '.join(kinds)}）" if kinds else "（列挙できない種類を含む）"
         res["verdict"] = NG
-        res["reasons"].append(f"注釈が{len(annots)}件残っている（{', '.join(kinds)}）")
+        res["reasons"].append(f"注釈が{n_annots}件残っている{detail}")
 
     # ---- [2] テキスト層
     page_text = page.get_text("text").strip()
     res["n_chars"] = len(page_text)
     in_mask = 0
-    if page_text and disp:
+    if page_text and unrot:
+        # get_text("words") は /Rotate に関わらず非回転座標を返す（2026-08-22に実測で
+        # 確定）。表示座標(disp)と比べると回転ページで見逃しと誤警報の両方が起きる
         for w in page.get_text("words"):
             wr = fitz.Rect(w[:4])
-            if any(not (wr & d).is_empty for d in disp):
+            if any(not (wr & u).is_empty for u in unrot):
                 in_mask += len(w[4])
     res["n_chars_in_mask"] = in_mask
     if in_mask:
         res["verdict"] = NG
         res["reasons"].append(f"マスク領域内にテキストが{in_mask}文字残っている")
+
+    # ---- [2.5] ベクター描画（線で書かれた筆跡）
+    # タブレット記入・描画ツールの筆跡は線の座標として残り、黒く塗っても
+    # 画像の検査[1]には映らない（2026-08-22に実測。枠から20pt離れるまで復元できた）。
+    # マスク領域に掛かる描画のうち、「塗りとして置かれた矩形」（fillのみ・領域を
+    # ほぼ覆う）以外が残っていれば不合格にする
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        drawings = None
+        if res["verdict"] == OK:
+            res["verdict"] = WARN
+            res["reasons"].append("線画を調べられなかった（確認できない＝合格にしない）")
+    if drawings:
+        n_ink = 0
+        for d in drawings:
+            drect = fitz.Rect(d["rect"])
+            hit = [u for u in unrot if not (drect & u).is_empty]
+            if not hit:
+                continue
+            is_mask_fill = (
+                d.get("fill") is not None
+                and all(it[0] == "re" for it in d.get("items", []))
+                and any(abs((drect & u).get_area() - u.get_area()) < u.get_area() * 0.2
+                        for u in hit))
+            if not is_mask_fill:
+                n_ink += 1
+        if n_ink:
+            res["verdict"] = NG
+            res["reasons"].append(
+                f"マスク領域に線画（ベクターの筆跡・図形）が{n_ink}本掛かっている"
+                "（黒塗りの下に座標が残っている疑い）")
     elif res["n_chars"] and not allow_text_outside:
         if RANK[WARN] > RANK[res["verdict"]]:
             res["verdict"] = WARN
@@ -348,6 +396,15 @@ def check_page(doc, page, rects_norm, opt):
                 continue
             lo, hi, npx = st
             if npx < MIN_REGION_PX:
+                # 解像度の低い層（MRCの背景層など）ではマスク枠が数画素に潰れて
+                # 判定できない。以前は記録も残さず外していたが、「確認できない」を
+                # 合格に数えない原則（本ファイル冒頭）に合わせて要確認に落とす
+                res["layers"].append({"idx": idx + 1, "xref": xref, "ok": None,
+                                      "px": npx, "spread": None, "lo": None, "hi": None})
+                if res["verdict"] == OK:
+                    res["verdict"] = WARN
+                    res["reasons"].append(
+                        f"レイヤー{idx + 1}(xref={xref})は解像度が低く判定できない（{npx}画素）")
                 continue
             spread = max(hi[c] - lo[c] for c in range(len(lo)))
             ok = spread <= tol
@@ -507,7 +564,10 @@ def parse_pages(spec: str):
             continue
         if "-" in part:
             a, b = part.split("-", 1)
-            pages.update(range(int(a), int(b) + 1))
+            a, b = int(a), int(b)
+            # 「2-300000000」のような指定で数億要素の集合を作らない。
+            # 実ページ数は check_file 側で絞られるので結果は変わらない
+            pages.update(range(max(a, 1), min(b, 99999) + 1))
         else:
             pages.add(int(part))
     return sorted(pages)
@@ -548,7 +608,11 @@ def main():
     for p in args.paths:
         path = Path(p)
         if path.is_dir():
-            files += sorted(path.glob("*.pdf"))
+            # glob("*.pdf") は .PDF（複合機の既定名に多い）を落とし、そのファイルは
+            # 「検査できなかった」ではなく最初から存在しない扱いになる（2026-08-22実測）。
+            # 読み込み側（suffix.lower()）と同じ判定にそろえる
+            files += sorted(q for q in path.iterdir()
+                            if q.is_file() and q.suffix.lower() == ".pdf")
         elif path.exists():
             files.append(path)
         else:
@@ -603,9 +667,9 @@ def main():
     print("=" * 64)
 
     if not args.no_report:
-        OUTPUT_DIR.mkdir(exist_ok=True)
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
         out = Path(args.report) if args.report else (
-            OUTPUT_DIR / f"検査レポート_{datetime.now():%Y%m%d-%H%M%S}.md")
+            REPORT_DIR / f"検査レポート_{datetime.now():%Y%m%d-%H%M%S}.md")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(build_report(results, args.tolerance, source), encoding="utf-8")
         print(f"レポート: {out}")

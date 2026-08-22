@@ -398,6 +398,181 @@ if srv4:
 if srv5:
     srv5.close()
 
+# ================================================================ 原因E〜G
+# 2026-08-22のリリース前総ざらいで見つかった穴（v1.1.0から元からあったもの）。
+# いずれも「氏名が読めるPDFが✓で出る」方向だったので、事故の形のまま試験にする。
+
+print("\n【原因E】紙の形が違うページは、塗らずに止める")
+
+
+def make_pdf(path, kinds, put_name=True):
+    """kinds の指定でスキャン風（画像1層）のページを作る。氏名は NAME_BOX の位置。
+
+    ベクターのまま作ると、検査が従来から出す「画像レイヤーが無い」の要確認に
+    かかる（この道具はスキャン画像PDFが本業）。実測と同じ土俵で試験する。
+    """
+    src = fitz.open()
+    for k in kinds:
+        w, h = (842, 595) if k == "横" else ((516, 729) if k == "B5" else (595, 842))
+        pg = src.new_page(width=w, height=h)
+        if put_name and k != "白":
+            r = fitz.Rect(NAME_BOX["x0"] * w, NAME_BOX["y0"] * h,
+                          NAME_BOX["x1"] * w, NAME_BOX["y1"] * h)
+            pg.draw_rect(r, color=(0, 0, 0), width=0.8)
+            pg.insert_text((r.x0 + 6, r.y0 + 18), "3-1-07 SAMPLE TARO", fontsize=12)
+            pg.insert_text((60, h - 60), "answer text", fontsize=10)
+    doc = fitz.open()
+    for i, k in enumerate(kinds):
+        pg_src = src[i]
+        pix = pg_src.get_pixmap(dpi=100)
+        pg = doc.new_page(width=pg_src.rect.width, height=pg_src.rect.height)
+        pg.insert_image(pg.rect, pixmap=pix)
+        if k == "回90":
+            pg.set_rotation(90)
+        if k == "切":
+            pg.set_cropbox(fitz.Rect(20, 30, pg_src.rect.width - 20, pg_src.rect.height - 30))
+    src.close()
+    data = doc.tobytes()
+    doc.close()
+    Path(path).write_bytes(data)
+    return data
+
+
+workE = TMP / "E"
+workE.mkdir(exist_ok=True)
+rects1 = [dict(NAME_BOX)]
+
+data = make_pdf(workE / "混在.pdf", ["縦", "縦", "回90", "縦"])
+try:
+    masking.mask_one_file("混在.pdf", data, rects1, "black", "", "all", 4)
+    check("束の中に回転ページが混じると止まる", False, "止まらなかった")
+except ValueError as ex:
+    check("束の中に回転ページが混じると止まる", "紙の形" in str(ex), str(ex))
+
+data = make_pdf(workE / "切取.pdf", ["縦", "切", "縦", "縦"])
+try:
+    masking.mask_one_file("切取.pdf", data, rects1, "black", "", "all", 4)
+    check("切り取り（トリミング）ページは止まる", False, "止まらなかった")
+except ValueError as ex:
+    check("切り取り（トリミング）ページは止まる", "切り取り" in str(ex), str(ex))
+
+fresh_output()
+data = make_pdf(workE / "束回転.pdf", ["回90"] * 4)
+# 束ごと回転した紙では、画面に映る氏名の位置も回る。利用者は「映った紙」の上に
+# 枠を引くので、試験でも枠を表示座標へ写してから渡す（回転前の位置のまま渡すと、
+# 「枠の下が空白」の警告が出るが、それは道具が正しくずれを教えている）
+with fitz.open(stream=data, filetype="pdf") as d0:
+    pg0 = d0[0]
+    un = fitz.Rect(NAME_BOX["x0"] * 595, NAME_BOX["y0"] * 842,
+                   NAME_BOX["x1"] * 595, NAME_BOX["y1"] * 842)
+    dispbox = un * pg0.rotation_matrix
+    pr0 = pg0.rect
+    rot_rect = [{"x0": (dispbox.x0 - pr0.x0) / pr0.width,
+                 "y0": (dispbox.y0 - pr0.y0) / pr0.height,
+                 "x1": (dispbox.x1 - pr0.x0) / pr0.width,
+                 "y1": (dispbox.y1 - pr0.y0) / pr0.height}]
+r = masking.mask_one_file("束回転.pdf", data, rot_rect, "black", "", "all", 4)
+check("束ごと回転は、表示どおりに引いた枠でそのまま通る（誤警報なし）",
+      r.get("ok") and r["check"]["verdict"] == "ok", str(r.get("check")))
+outp = masking.OUTPUT_DIR / r["output"]
+with fitz.open(outp) as od:
+    prq = od[0].rect
+    clip = fitz.Rect(prq.x0 + rot_rect[0]["x0"] * prq.width + 2,
+                     prq.y0 + rot_rect[0]["y0"] * prq.height + 2,
+                     prq.x0 + rot_rect[0]["x1"] * prq.width - 2,
+                     prq.y0 + rot_rect[0]["y1"] * prq.height - 2)
+    pix = od[0].get_pixmap(clip=clip, dpi=100, colorspace=fitz.csGRAY)
+    spread = (max(pix.samples) - min(pix.samples)) if pix.samples else 999
+check("回転した束でも氏名の場所が本当に塗られている", spread == 0, f"濃淡の幅={spread}")
+
+fresh_output()
+data = make_pdf(workE / "B5.pdf", ["B5"] * 4)
+r = masking.mask_one_file("B5.pdf", data, rects1, "black", "", "all", 4)
+check("B5への相似縮小はそのまま通る", r.get("ok") and r["check"]["verdict"] == "ok",
+      str(r.get("check")))
+
+# 「枠を引いたときの紙」と束全体が食い違う場合（全ファイルへコピーの2本目相当）
+data = make_pdf(workE / "コピー先.pdf", ["回90"] * 4)
+try:
+    masking.mask_one_file("コピー先.pdf", data, rects1, "black", "", "all", 4,
+                          base_shape=(round(595 / 842, 3), 0))
+    check("枠を引いた紙と形が違う束は止まる（コピー先の検出）", False, "止まらなかった")
+except ValueError as ex:
+    check("枠を引いた紙と形が違う束は止まる（コピー先の検出）", "紙の形" in str(ex), str(ex))
+
+print("\n【原因F】描かれない持ち物・線の筆跡を残さない")
+doc = fitz.open()
+for i in range(3):
+    pg = doc.new_page(width=595, height=842)
+    r = fitz.Rect(NAME_BOX["x0"] * 595, NAME_BOX["y0"] * 842,
+                  NAME_BOX["x1"] * 595, NAME_BOX["y1"] * 842)
+    pg.insert_text((r.x0 + 6, r.y0 + 18), f"SEITO {i} NAMAE", fontsize=12)
+doc.set_toc([[1, "1年1組01 見本太郎", 1], [1, "1年1組02 見本次郎", 2]])
+doc.embfile_add("meibo.csv", b"1,MihonTaro\n2,MihonJiro\n")
+databag = doc.tobytes()
+doc.close()
+fresh_output()
+r = masking.mask_one_file("持ち物.pdf", databag, rects1, "black", "", "all", 3)
+outp = masking.OUTPUT_DIR / r["output"]
+with fitz.open(outp) as od:
+    toc_after = od.get_toc()
+    emb_after = od.embfile_count()
+check("しおり（氏名入り）が出力に残らない", not toc_after, str(toc_after))
+check("添付ファイルが出力に残らない", emb_after == 0, str(emb_after))
+
+# 線の筆跡（枠の余白5pt＝旧来は座標が丸ごと残った）
+base = fitz.open()
+bp = base.new_page(width=595, height=842)
+bp.insert_text((60, 100), "printed form", fontsize=12)
+bpix = bp.get_pixmap(dpi=100)
+base.close()
+doc = fitz.open()
+pg = doc.new_page(width=595, height=842)
+pg.insert_image(pg.rect, pixmap=bpix)          # スキャンした紙の様式（画像）
+r = fitz.Rect(200, 200, 340, 260)
+for k in range(5):                              # その上にタブレット記入の筆跡（線）
+    pg.draw_line((r.x0 + 10 + k * 22, r.y0 + 12), (r.x0 + 24 + k * 22, r.y1 - 12),
+                 color=(0, 0, 0.5), width=2)
+datav = doc.tobytes()
+doc.close()
+vr = [{"x0": (r.x0 - 5) / 595, "y0": (r.y0 - 5) / 842,
+       "x1": (r.x1 + 5) / 595, "y1": (r.y1 + 5) / 842}]
+fresh_output()
+res = masking.mask_one_file("筆跡.pdf", datav, vr, "black", "", "all", 1)
+outp = masking.OUTPUT_DIR / res["output"]
+with fitz.open(outp) as od:
+    strokes = [d for d in od[0].get_drawings()
+               if d.get("items") and any(it[0] != "re" for it in d["items"])]
+check("線の筆跡が黒塗りの下に残らない（余白5ptでも消える）", not strokes,
+      f"残った線 {len(strokes)} 本")
+check("筆跡を消したうえで検査も通る", res["check"]["verdict"] == "ok", str(res["check"]))
+
+print("\n【原因G】検査していないページを ✓ と言わない")
+workG = TMP / "G"
+workG.mkdir(exist_ok=True)
+datag = make_pdf(workG / "全頁氏名.pdf", ["縦"] * 4)
+fresh_output()
+r = masking.mask_one_file("全頁氏名.pdf", datag, rects1, "black", "", "odd", 4)
+check("奇数ページのみ指定で、対象外に氏名が残れば⚠になる",
+      r["check"]["verdict"] == "warn"
+      and any("対象外" in x for x in r["check"]["reasons"]),
+      str(r["check"]))
+check("戻り値にページ数の内訳が載る", r.get("totalPages") == 4 and r.get("excludedPages") == 2,
+      f'{r.get("totalPages")} / {r.get("excludedPages")}')
+
+try:
+    masking.mask_one_file("壊れ座標.pdf", datag, [{"x0": 1.5, "y0": 0.1, "x1": 1.8, "y1": 0.2}],
+                          "black", "", "all", 4)
+    check("範囲外の座標の矩形は黙って捨てず止める", False, "止まらなかった")
+except ValueError as ex:
+    check("範囲外の座標の矩形は黙って捨てず止める", "不正な座標" in str(ex), str(ex))
+
+up = workG / "大文字.PDF"
+shutil.copy(SRC, up)
+import check_masked as _ck2
+listed = sorted(q.name for q in workG.iterdir() if q.is_file() and q.suffix.lower() == ".pdf")
+check("大文字拡張子（.PDF）も検査の列挙に入る判定式である", "大文字.PDF" in listed, str(listed))
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + "=" * 60)
 print("すべて通りました。" if not fails else f"通らなかった項目 {len(fails)} 件: {fails}")

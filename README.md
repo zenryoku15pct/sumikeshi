@@ -103,7 +103,9 @@ python3 check_masked.py output/
 
 （Windows は `.venv\Scripts\python check_masked.py output\`）
 
-どちらも `output/検査レポート_日時.md` にページごとの合否表が残ります。
+どちらも `検査レポート/検査レポート_日時.md` にページごとの合否表が残ります
+（`output/` の外に置くのは、レポートにはファイル名や元のメタデータが載るため、
+人に渡すフォルダへ紛れ込ませないためです）。
 コマンド版の終了コードは 合格=0 / 不合格・要確認あり=1。
 
 ### 検査する5項目
@@ -182,7 +184,8 @@ python3 check_masked.py samples/leak-check/ --no-report
 | `make_icon.py` | アプリのアイコンの生成元 |
 | `tests/` | 中核が旧版と同じ結果を出すか・画面の動き・漏れを見逃さないかの自動テスト |
 | `assets/` | アイコンなど |
-| `output/` | マスキング済みPDF・検査レポートの出力先 |
+| `output/` | マスキング済みPDFの出力先 |
+| `検査レポート/` | 検査レポート（ファイル名・元メタデータが載るため出力とは分ける） |
 | `presets/` | 保存した矩形設定（JSON） |
 
 出力先（`output/` `presets/`）は、Windowsではexeと同じフォルダ、macOSでは

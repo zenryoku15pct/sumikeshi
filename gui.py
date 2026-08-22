@@ -119,6 +119,10 @@ class DocEntry:
     # 読み込んだ瞬間のファイルの姿。実行の直前に見比べて、間に差し替えられて
     # いないかを確かめる（差し替わっていると、画面で見た紙と塗る紙が別物になる）
     stamp: tuple = ()
+    # 枠を引いたときに画面に出ていた紙の形（縦横比・回転）。実行時に全対象ページと
+    # 照合する。「この設定を全ファイルへコピー」の2本目以降は画面に一度も出ない
+    # ため、これを一緒に運ばないと形の食い違いを検出できない（2026-08-22の総ざらい）
+    rect_shape: tuple = ()
 
     @staticmethod
     def stamp_of(path: Path) -> tuple:
@@ -550,7 +554,8 @@ class MaskWorker(QThread):
                         "いったん取り除いて、読み込み直してください")
                 results.append(masking.mask_one_file(
                     job["name"], data, job["rects"], self.color,
-                    job["range"], job["parity"], job["pages"]))
+                    job["range"], job["parity"], job["pages"],
+                    base_shape=job.get("shape") or None))
             except Exception as e:  # 1ファイルの失敗で全体を止めない
                 results.append({"ok": False, "name": job["name"], "error": str(e)})
         self.done.emit(results)
@@ -752,19 +757,21 @@ class CheckDialog(QDialog):
         bottom.addWidget(close)
         v.addLayout(bottom)
 
-    def closeEvent(self, ev):
+    def done(self, result):
         """検査の最中に閉じられたときの後始末。
 
         裏方を走らせたまま窓を捨てると、アプリ終了時に異常終了する
         （QThread: Destroyed while thread is still running・2026-08-21に実測）。
-        切り上げを頼んで、終わるのを待ってから閉じる。
+        「閉じる」ボタン（accept）・Esc（reject）・×（closeEvent）のどの経路も
+        最後はここを通るので、後始末はここに一本化する（×だけに置いていた
+        2026-08-22以前の形では、他の2経路で裏方が走り続けていた）。
         """
         w = self._worker
         if w is not None and w.isRunning():
             self._closing = True
             w.requestInterruption()
             w.wait(5000)
-        super().closeEvent(ev)
+        super().done(result)
 
     def _pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, "検査するフォルダを選ぶ", self.folder.text())
@@ -776,7 +783,11 @@ class CheckDialog(QDialog):
         if not folder.is_dir():
             QMessageBox.warning(self, "検査", "フォルダが見つかりません。")
             return
-        files = sorted(folder.glob("*.pdf"))
+        # glob("*.pdf") は .PDF（複合機の既定名に多い）を黙って外し、
+        # 「14本のうち13本を検査して全部合格」になる（2026-08-22実測）。
+        # 読み込み側と同じ判定でそろえる
+        files = sorted(q for q in folder.iterdir()
+                       if q.is_file() and q.suffix.lower() == ".pdf")
         if not files:
             QMessageBox.information(self, "検査", "このフォルダにPDFがありません。")
             return
@@ -1209,7 +1220,15 @@ class MainWindow(QMainWindow):
 
     def add_files(self, paths: list[Path]):
         added, errors = 0, []
+        known = {e.path.resolve() for e in self.entries}
+        dup = 0
         for p in paths:
+            try:
+                if p.resolve() in known:
+                    dup += 1
+                    continue
+            except OSError:
+                pass
             try:
                 with fitz.open(p) as d:
                     n = d.page_count
@@ -1222,6 +1241,10 @@ class MainWindow(QMainWindow):
                                          stamp=DocEntry.stamp_of(p)))
             self._next_id += 1
             added += 1
+            try:
+                known.add(p.resolve())
+            except OSError:
+                pass
         if self.ref_id is None and self.entries:
             self.ref_id = self.entries[0].doc_id
             self.page = 1
@@ -1231,7 +1254,10 @@ class MainWindow(QMainWindow):
         if errors:
             self.toast(f"読み込めないファイル: {'、'.join(errors)}", True)
         elif added:
-            self.toast(f"{added} ファイルを読み込みました")
+            note = f"（既に読み込み済みの{dup}件は飛ばしました）" if dup else ""
+            self.toast(f"{added} ファイルを読み込みました{note}")
+        elif dup:
+            self.toast(f"{dup} 件はすべて読み込み済みです", True)
 
     def remove_doc(self, doc_id):
         e = self.find(doc_id)
@@ -1261,6 +1287,7 @@ class MainWindow(QMainWindow):
     def switch_doc(self, doc_id):
         if doc_id == self.ref_id:
             return
+        self._undo_delete = None   # 別のファイルへ移ったら、削除の取り消しは無効
         prev = self.current()
         if prev is not None:
             prev.close()          # 表示に使っていた写しを手放す（覚え続けない）
@@ -1293,105 +1320,135 @@ class MainWindow(QMainWindow):
         self.render_toolbar()
         self.update_apply_button()
 
+    def current_page_shape(self) -> tuple:
+        """いま画面に出ているページの紙の形（縦横比・回転）。"""
+        e = self.current()
+        if not e:
+            return ()
+        try:
+            page = e.document()[self.page - 1]
+            r = page.rect
+            return (round(r.width / r.height, 3), page.rotation)
+        except Exception:
+            return ()
+
     def after_rects_change(self):
+        # 枠を初めて持ったファイルには、いま見ている紙の形を基準として控える。
+        # 実行時に全対象ページとこの形を照合する（束の中の異形ページ・
+        # 「全ファイルへコピー」先の形違いを塗る前に止めるため）
+        e = self.current()
+        if e is not None:
+            if e.rects and not e.rect_shape:
+                e.rect_shape = self.current_page_shape()
+            elif not e.rects:
+                e.rect_shape = ()
         self.render_doc_list()
         self.render_rect_list()
         self.update_apply_button()
 
     def render_doc_list(self):
         self._syncing = True
-        self.doc_list.clear()
-        for e in self.entries:
-            row = QWidget()
-            h = QHBoxLayout(row)
-            h.setContentsMargins(8, 5, 6, 5)
-            h.setSpacing(6)
-            name = ElidedLabel(e.name)
-            h.addWidget(name, 1)
-            n = len(e.rects)
-            badge = QLabel(f"矩形{n}" if n else "未設定")
-            badge.setProperty("kind", "badge" if n else "badgeZero")
-            h.addWidget(badge)
-            pg = QLabel(f"{e.pages}p")
-            pg.setProperty("kind", "hint")
-            h.addWidget(pg)
-            rm = small_btn("✕", "一覧から取り除く（ファイル自体は削除されません）")
-            rm.clicked.connect(lambda _=False, i=e.doc_id: self.remove_doc(i))
-            h.addWidget(rm)
-            item = QListWidgetItem()
-            item.setSizeHint(row.sizeHint())
-            item.setData(Qt.UserRole, e.doc_id)
-            item.setToolTip("クリックで表示・編集対象にする")
-            self.doc_list.addItem(item)
-            self.doc_list.setItemWidget(item, row)
-            if e.doc_id == self.ref_id:
-                self.doc_list.setCurrentItem(item)
-        self.clear_docs_btn.setVisible(bool(self.entries))
-        fit_list(self.doc_list, 200)
-        self._syncing = False
+        try:
+            self.doc_list.clear()
+            for e in self.entries:
+                row = QWidget()
+                h = QHBoxLayout(row)
+                h.setContentsMargins(8, 5, 6, 5)
+                h.setSpacing(6)
+                name = ElidedLabel(e.name)
+                name.setToolTip(str(e.path))   # 別フォルダの同名PDFを区別できるように
+                h.addWidget(name, 1)
+                n = len(e.rects)
+                badge = QLabel(f"矩形{n}" if n else "未設定")
+                badge.setProperty("kind", "badge" if n else "badgeZero")
+                h.addWidget(badge)
+                pg = QLabel(f"{e.pages}p")
+                pg.setProperty("kind", "hint")
+                h.addWidget(pg)
+                rm = small_btn("✕", "一覧から取り除く（ファイル自体は削除されません）")
+                rm.clicked.connect(lambda _=False, i=e.doc_id: self.remove_doc(i))
+                h.addWidget(rm)
+                item = QListWidgetItem()
+                item.setSizeHint(row.sizeHint())
+                item.setData(Qt.UserRole, e.doc_id)
+                item.setToolTip("クリックで表示・編集対象にする")
+                self.doc_list.addItem(item)
+                self.doc_list.setItemWidget(item, row)
+                if e.doc_id == self.ref_id:
+                    self.doc_list.setCurrentItem(item)
+            self.clear_docs_btn.setVisible(bool(self.entries))
+            fit_list(self.doc_list, 200)
+        finally:
+            self._syncing = False
 
     def render_rect_list(self):
         self._syncing = True
-        self.rect_list.clear()
-        e = self.current()
-        rects = e.rects if e else []
-        for i, r in enumerate(rects):
-            row = HoverRow()
-            row.hovered.connect(lambda on, k=i: self.canvas.set_hover(k if on else -1))
-            h = QHBoxLayout(row)
-            h.setContentsMargins(8, 4, 6, 4)
-            h.setSpacing(6)
-            sw = QLabel()
-            sw.setFixedSize(QSize(12, 12))
-            sw.setProperty("kind", "swatch")
-            sw.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-            h.addWidget(sw)
-            w = (r["x1"] - r["x0"]) * 100
-            ht = (r["y1"] - r["y0"]) * 100
-            lb = QLabel(f"矩形{i + 1}（幅{w:.1f}% × 高さ{ht:.1f}%）")
-            lb.setAttribute(Qt.WA_TransparentForMouseEvents, True)   # 行に通す
-            h.addWidget(lb, 1)
-            rm = small_btn("✕", "この矩形を削除", danger=True)
-            rm.clicked.connect(lambda _=False, k=i: self.delete_rect(k))
-            h.addWidget(rm)
-            item = QListWidgetItem()
-            item.setSizeHint(row.sizeHint())
-            self.rect_list.addItem(item)
-            self.rect_list.setItemWidget(item, row)
-        if 0 <= self.canvas.selected < len(rects):
-            self.rect_list.setCurrentRow(self.canvas.selected)
-        else:
-            self.rect_list.setCurrentRow(-1)
-        self.clear_rects_btn.setVisible(bool(rects))
-        fit_list(self.rect_list, 170)
-        self._syncing = False
+        try:
+            self.rect_list.clear()
+            e = self.current()
+            rects = e.rects if e else []
+            for i, r in enumerate(rects):
+                row = HoverRow()
+                row.hovered.connect(lambda on, k=i: self.canvas.set_hover(k if on else -1))
+                h = QHBoxLayout(row)
+                h.setContentsMargins(8, 4, 6, 4)
+                h.setSpacing(6)
+                sw = QLabel()
+                sw.setFixedSize(QSize(12, 12))
+                sw.setProperty("kind", "swatch")
+                sw.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                h.addWidget(sw)
+                w = (r["x1"] - r["x0"]) * 100
+                ht = (r["y1"] - r["y0"]) * 100
+                lb = QLabel(f"矩形{i + 1}（幅{w:.1f}% × 高さ{ht:.1f}%）")
+                lb.setAttribute(Qt.WA_TransparentForMouseEvents, True)   # 行に通す
+                h.addWidget(lb, 1)
+                rm = small_btn("✕", "この矩形を削除", danger=True)
+                rm.clicked.connect(lambda _=False, k=i: self.delete_rect(k))
+                h.addWidget(rm)
+                item = QListWidgetItem()
+                item.setSizeHint(row.sizeHint())
+                self.rect_list.addItem(item)
+                self.rect_list.setItemWidget(item, row)
+            if 0 <= self.canvas.selected < len(rects):
+                self.rect_list.setCurrentRow(self.canvas.selected)
+            else:
+                self.rect_list.setCurrentRow(-1)
+            self.clear_rects_btn.setVisible(bool(rects))
+            fit_list(self.rect_list, 170)
+        finally:
+            self._syncing = False
 
     def render_toolbar(self):
         self._syncing = True
-        self.ref_box.clear()
-        for e in self.entries:
-            self.ref_box.addItem(f"{e.name}（{e.pages}ページ）", e.doc_id)
-        e = self.current()
-        if e:
-            self.ref_box.setCurrentIndex(self.ref_box.findData(e.doc_id))
-        self.page_lb.setText(f"{self.page} / {e.pages}" if e else "– / –")
-        self.prev_btn.setEnabled(bool(e) and self.page > 1)
-        self.next_btn.setEnabled(bool(e) and self.page < e.pages)
-        self._syncing = False
+        try:
+            self.ref_box.clear()
+            for e in self.entries:
+                self.ref_box.addItem(f"{e.name}（{e.pages}ページ）", e.doc_id)
+            e = self.current()
+            if e:
+                self.ref_box.setCurrentIndex(self.ref_box.findData(e.doc_id))
+            self.page_lb.setText(f"{self.page} / {e.pages}" if e else "– / –")
+            self.prev_btn.setEnabled(bool(e) and self.page > 1)
+            self.next_btn.setEnabled(bool(e) and self.page < e.pages)
+        finally:
+            self._syncing = False
 
     def update_apply_button(self):
         self.apply_btn.setEnabled(any(e.rects for e in self.entries))
 
     def sync_inputs_from_cur(self):
         self._syncing = True
-        e = self.current()
-        self.range_edit.setText(e.page_range if e else "")
-        idx = self.parity_box.findData(e.parity if e else "all")
-        self.parity_box.setCurrentIndex(max(0, idx))
-        self.range_edit.setEnabled(e is not None)
-        self.parity_box.setEnabled(e is not None)
-        self.canvas.set_rects(e.rects if e else [])
-        self._syncing = False
+        try:
+            e = self.current()
+            self.range_edit.setText(e.page_range if e else "")
+            idx = self.parity_box.findData(e.parity if e else "all")
+            self.parity_box.setCurrentIndex(max(0, idx))
+            self.range_edit.setEnabled(e is not None)
+            self.parity_box.setEnabled(e is not None)
+            self.canvas.set_rects(e.rects if e else [])
+        finally:
+            self._syncing = False
 
     def _range_changed(self, text):
         if self._syncing:
@@ -1458,6 +1515,10 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, ev)
 
     def _global_key(self, ev) -> bool:
+        # マウスで矩形を掴んでいる最中はキー操作を受け付けない。ドラッグ中に
+        # ⌘Zが入ると矩形の並びがずれ、掴んでいない矩形が動く（2026-08-22に実測）
+        if getattr(self.canvas, "_action", None):
+            return True
         """画面のどこを触っていてもキーが効くようにする。
 
         旧版はブラウザ全体でキーを拾い、文字の入力欄とプルダウンにいるときだけ
@@ -1533,12 +1594,24 @@ class MainWindow(QMainWindow):
 
     def clear_rects(self):
         e = self.current()
-        if not e:
+        if not e or not e.rects:
+            return
+        n = len(e.rects)
+        # 全消しは取り消せない。直前の1件削除の「⌘Zで戻せます」が画面に残った
+        # まま全消しでき、⌘Zが無関係な1件だけ戻す嘘になっていた（2026-08-22に実測）
+        ans = QMessageBox.question(
+            self, "矩形をすべて削除",
+            f"このファイルの矩形{n}件をすべて削除します。元に戻せません。よろしいですか？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ans != QMessageBox.Yes:
             return
         e.rects.clear()
+        e.rect_shape = ()
+        self._undo_delete = None
         self.canvas.set_selected(-1)
         self.after_rects_change()
         self.canvas.update()
+        self.toast(f"矩形{n}件をすべて削除しました")
 
     def update_paste_button(self):
         n = len(self.clipboard["rects"]) if self.clipboard else 0
@@ -1552,8 +1625,19 @@ class MainWindow(QMainWindow):
             return
         i = self.canvas.selected
         one = 0 <= i < len(e.rects)
+        if one and len(e.rects) > 1:
+            # 描き終わった矩形は選択されたままなので、「氏名欄→署名欄→コピー」の
+            # 自然な手順では最後の1つしか写らず、先に描いた枠が黙って抜ける
+            # （2026-08-22に実測）。複数あるときは何を写すか確かめる
+            ans = QMessageBox.question(
+                self, "矩形をコピー",
+                f"矩形が{len(e.rects)}件あります。全{len(e.rects)}件をコピーしますか？\n"
+                f"（「いいえ」で選択中の矩形{i + 1}だけをコピーします）",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            one = ans != QMessageBox.Yes
         src = [e.rects[i]] if one else e.rects
-        self.clipboard = {"rects": [dict(r) for r in src], "source_id": e.doc_id}
+        self.clipboard = {"rects": [dict(r) for r in src], "source_id": e.doc_id,
+                          "shape": tuple(e.rect_shape)}
         self.update_paste_button()
         self.toast(
             f"選択中の矩形{i + 1} をコピーしました（別ファイルへ切り替えて貼り付け）" if one
@@ -1577,6 +1661,8 @@ class MainWindow(QMainWindow):
                 x0 = min(max(0.0, x0 + OFF), 1.0 - w)
                 y0 = min(max(0.0, y0 + OFF), 1.0 - h)
             e.rects.append({"x0": x0, "y0": y0, "x1": x0 + w, "y1": y0 + h})
+        if not same and self.clipboard.get("shape"):
+            e.rect_shape = tuple(self.clipboard["shape"])   # 枠と一緒に紙の形も運ぶ
         self.canvas.set_selected(len(e.rects) - 1)
         self.after_rects_change()
         self.canvas.update()
@@ -1601,10 +1687,12 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if ans != QMessageBox.Yes:
             return
+        src_shape = tuple(e.rect_shape) if e.rect_shape else self.current_page_shape()
         for d in others:
             d.rects = [dict(r) for r in e.rects]
             d.page_range = e.page_range
             d.parity = e.parity
+            d.rect_shape = src_shape   # 枠と一緒に「引いたときの紙の形」も運ぶ
         self.after_rects_change()
         self.toast(f"{len(others)} ファイルへ設定をコピーしました")
 
@@ -1642,7 +1730,8 @@ class MainWindow(QMainWindow):
             return
         try:
             saved = masking.save_preset(name, e.rects, self.mask_color(),
-                                        e.page_range, e.parity)
+                                        e.page_range, e.parity,
+                                        shape=e.rect_shape or self.current_page_shape())
         except Exception as ex:
             self.toast(str(ex), True)
             return
@@ -1657,11 +1746,25 @@ class MainWindow(QMainWindow):
         if not self.entries:
             self.toast("PDFを読み込んでから実行してください", True)
             return
+        # 読み込む前に検算する。範囲外の座標が黙って捨てられると、画面の件数と
+        # 実際に塗る件数が食い違う（2026-08-22に実測）。壊れていたらここで止める
+        raw = p.get("rects", [])
+        try:
+            cleaned = masking.clean_rects(raw)
+        except ValueError as ex:
+            self.toast(f"プリセット「{p['name']}」を読み込めません: {ex}", True)
+            return
+        if len(cleaned) != len(raw):
+            self.toast(f"プリセット「{p['name']}」に不正な座標の矩形が"
+                       f"{len(raw) - len(cleaned)}件あります。読み込みを中止しました", True)
+            return
+        shape = tuple(p.get("shape") or ())
         targets = self.entries if to_all else [self.current()]
         for e in targets:
             if e is None:
                 continue
-            e.rects = [dict(r) for r in p.get("rects", [])]
+            e.rects = [dict(r) for r in cleaned]
+            e.rect_shape = shape          # 無ければ空＝実行時は束内の照合だけになる
             e.page_range = p.get("range", "")
             e.parity = p.get("parity", "all")
         if p.get("color", "black") == "white":
@@ -1702,14 +1805,29 @@ class MainWindow(QMainWindow):
         jobs = [{"name": e.name, "path": e.path,
                  "rects": [dict(r) for r in e.rects],
                  "range": e.page_range, "parity": e.parity, "pages": e.pages,
-                 "stamp": e.stamp}
+                 "stamp": e.stamp, "shape": tuple(e.rect_shape)}
                 for e in self.entries]
         if not jobs:
             self.toast("PDFが読み込まれていません", True)
             return
+        # ファイル間で矩形の数がそろっていないときは一度立ち止まる。
+        # 「最後の1本に貼り忘れた」「コピーで1件しか写っていなかった」を
+        # 実行前に捕まえる関門（2026-08-22の総ざらいの処方）
+        counts = {len(e.rects) for e in self.entries if e.rects}
+        if len(counts) > 1:
+            lines = "\n".join(f"・{e.name}: 矩形{len(e.rects)}件"
+                               for e in self.entries if e.rects)
+            ans = QMessageBox.question(
+                self, "矩形の数がそろっていません",
+                "ファイルによって矩形の数が違います。貼り忘れ・コピー漏れはありませんか？\n\n"
+                f"{lines}\n\nこのまま実行しますか？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                return
         self.results.clear()
         self.apply_btn.setEnabled(False)
         self.apply_btn.setText("処理中…")
+        self._undo_delete = None   # 実行が始まったら、それ以前の削除は確定
         self._progress = BusyDialog("マスキング中…", len(jobs), self)
         self._mask_worker = MaskWorker(jobs, self.mask_color())
         self._mask_worker.progress.connect(self._mask_progress)
@@ -1728,8 +1846,10 @@ class MainWindow(QMainWindow):
         self.update_apply_button()
         self.results.setHtml(self._results_html(results))
         # 結果はサイドバーの下のほうにある。実行直後に見えていないと
-        # 「消え残りを検出」を見落とすので、そこまで自動で送る
-        self.sidebar.ensureWidgetVisible(self.results, 0, 180)
+        # 「消え残りを検出」を見落とすので、自動で送る。行き先は結果欄ではなく
+        # その下の注意書き——結果欄の上端で止まると、箱の外へ出した注意書きが
+        # 1画素しか見えない（2026-08-22に実測）
+        self.sidebar.ensureWidgetVisible(self.warn, 0, 10)
         ng = sum(1 for r in results if r.get("ok") and (r.get("check") or {}).get("verdict") == "ng")
         ng += sum(1 for r in results if r.get("ok") is False)
         warn = sum(1 for r in results if r.get("ok") and (r.get("check") or {}).get("verdict") == "warn")
@@ -1737,9 +1857,12 @@ class MainWindow(QMainWindow):
         skip = sum(1 for r in results if r.get("skipped"))
         if ng:
             self.toast(f"消え残りを検出: {ng} ファイル。結果欄を確認してください", True)
+        elif warn:
+            # 要確認の代表は「枠の下に最初から何も無い」＝1文字も塗れていない可能性。
+            # 成功の顔で流すと見過ごされる（2026-08-22の総ざらい）ので赤で知らせる
+            self.toast(f"要確認 {warn} 件があります。結果欄を確認してください", True)
         else:
             self.toast(f"完了: {ok} ファイルを検査まで通しました"
-                       + (f"（要確認 {warn} 件）" if warn else "")
                        + (f"（矩形未設定 {skip} 件はスキップ）" if skip else ""))
 
     @staticmethod
@@ -1759,16 +1882,20 @@ class MainWindow(QMainWindow):
                 detail = ("".join(f'<div style="color:#a16207;margin-left:1.1em">{esc(x)}</div>'
                                   for x in reasons) if reasons else "")
                 v = c.get("verdict")
+                pages_note = f'{r["pagesMasked"]}ページ'
+                if r.get("totalPages") and r.get("excludedPages"):
+                    pages_note = (f'{r["totalPages"]}ページ中{r["pagesMasked"]}ページを処理・'
+                                  f'{r["excludedPages"]}ページは対象外')
                 if v == "ng":
                     rows.append(f'<div style="color:#b91c1c;margin:3px 0">✕ {esc(r["name"])}'
-                                f'（{r["pagesMasked"]}ページ処理・<b>検査で消え残りを検出</b>）'
+                                f'（{pages_note}・<b>検査で消え残りを検出</b>）'
                                 f'</div>{out}{detail}')
                 elif v == "warn":
                     rows.append(f'<div style="color:#a16207;margin:3px 0">⚠ {esc(r["name"])}'
-                                f'（{r["pagesMasked"]}ページ処理・要確認）</div>{out}{detail}')
+                                f'（{pages_note}・要確認）</div>{out}{detail}')
                 else:
                     rows.append(f'<div style="color:#0b7a44;margin:3px 0">✓ {esc(r["name"])}'
-                                f'（{r["pagesMasked"]}ページ・検査済み）</div>{out}')
+                                f'（{pages_note}・検査済み）</div>{out}')
             else:
                 any_done = True
                 rows.append(f'<div style="color:#b91c1c;margin:3px 0">'
@@ -1928,10 +2055,22 @@ def _claim_single_instance(base_dir: Path) -> QLocalServer | None:
         probe.close()
         return None                      # 本当に誰かが使っている
 
-    QLocalServer.removeServer(name)       # 残骸の掃除（居なければ何もしない）
+    # つながらなかった＝残骸か無人。無条件に removeServer すると、同時に起動した
+    # もう1本が直前に取った生きたソケットまで消してしまうので、まず取りに行き、
+    # 失敗したときだけ掃除してもう一度だけ取り直す（2026-08-22の総ざらい）
     server = QLocalServer()
-    server.listen(name)
-    return server
+    if server.listen(name):
+        return server
+    QLocalServer.removeServer(name)       # 残骸の掃除
+    if server.listen(name):
+        return server
+    # それでも取れない＝直前に他の誰かが取った。もう一度だけ確かめる
+    probe2 = QLocalSocket()
+    probe2.connectToServer(name)
+    if probe2.waitForConnected(200):
+        probe2.close()
+        return None
+    return server                         # 取れも繋がりもしない環境では止めずに通す
 
 
 def main() -> int:

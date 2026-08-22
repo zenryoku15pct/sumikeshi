@@ -155,7 +155,11 @@ check("同じファイル内での複製は少しずらす",
       len(e1.rects) == 2 and abs(e1.rects[1]["x0"] - .12) < 1e-9
       and abs((e1.rects[1]["x1"] - e1.rects[1]["x0"]) - .4) < 1e-9,
       str(e1.rects))
-win.switch_doc(e0.doc_id); cv.set_selected(1); win.copy_rects()
+win.switch_doc(e0.doc_id); cv.set_selected(1)
+# 複数件あるときは「全件か選択中だけか」を確かめる窓が出る。「いいえ」＝選択中だけ
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
+win.copy_rects()
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 check("選択中のみコピーできる", len(win.clipboard["rects"]) == 1)
 
 print("\n【6】ファイルごとの設定")

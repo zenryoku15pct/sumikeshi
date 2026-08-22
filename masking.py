@@ -101,6 +101,7 @@ import check_masked as _ck  # noqa: E402
 _ck.BASE_DIR = BASE_DIR
 _ck.OUTPUT_DIR = OUTPUT_DIR
 _ck.PRESET_DIR = PRESET_DIR
+_ck.REPORT_DIR = REPORT_DIR
 
 RENDER_DPI = 150
 MAX_RENDER_WIDTH = 2200  # 表示用レンダリングの最大幅(px)
@@ -123,6 +124,9 @@ def parse_page_spec(spec: str, parity: str, n_pages: int) -> list[int]:
                 a, b = int(m.group(1)), int(m.group(2))
                 if a > b:
                     a, b = b, a
+                # 先にページ数へ収めてから展開する。「2-300000000」のような指定で
+                # 数億要素の集合を作りに行かないため（結果は従来と完全に同じ）
+                a, b = max(a, 1), min(b, n_pages)
                 pages.update(range(a, b + 1))
             elif part.isdigit():
                 pages.add(int(part))
@@ -154,6 +158,57 @@ def clean_rects(raw) -> list[dict]:
     return rects
 
 
+# ---------------------------------------------------------------- 紙の形
+def page_shape(page) -> tuple:
+    """そのページの紙の形＝(縦横比, 回転, 切り取りの有無)。
+
+    矩形は正規化座標(0〜1)で持つため、束の中に形の違うページが混じると、
+    そのページだけ別の場所を塗り、検査も同じ誤った場所を見て「✓」になる
+    （2026-08-22の総ざらいで実測）。塗る前にこの形を突き合わせて止める。
+    """
+    r = page.rect
+    hidden = (abs(page.cropbox.width - page.mediabox.width) > 1
+              or abs(page.cropbox.height - page.mediabox.height) > 1)
+    return (round(r.width / r.height, 3), page.rotation, hidden)
+
+
+def check_page_shapes(doc, pages: list[int], base_shape=None) -> None:
+    """対象ページの紙の形を照合し、危ないものは塗らずに止める。
+
+    - 束の中で形（縦横比・回転）が食い違う → 中断（ページ数違いと同じ扱い）
+    - CropBox で切り取っただけのページ → 中断。切り取りは表示範囲を変えるだけで
+      中身を捨てない。隠れた領域は塗りにも検査にも入らず、受け取った側が
+      切り取りを外すだけで氏名が復活する（実測済み）
+    - /UserUnit ≠ 1 → 中断（塗る場所が実寸でずれる）
+    - base_shape（枠を引いたときに画面に出ていた紙の形）が渡されていれば、
+      それとも照合する。「この設定を全ファイルへコピー」の2本目以降の食い違いは、
+      これが無いと原理的に検出できない
+    誤警報を出さないことは9場面で確認済み——B5への相似縮小・束ごとの回転・
+    白紙裏面つきの両面スキャンは止めない。
+    """
+    shapes = {p: page_shape(doc[p - 1]) for p in pages}
+    cropped = [p for p, s in shapes.items() if s[2]]
+    if cropped:
+        nums = "・".join(str(p) for p in cropped[:5])
+        raise ValueError(
+            f"{nums}ページ目に切り取り（トリミング）があります。切り取りは中身を残したまま"
+            "隠すだけで、このツールでは塗れません。切り取りを解除したPDFで読み込み直してください")
+    for p in pages:
+        uu = doc.xref_get_key(doc[p - 1].xref, "UserUnit")
+        if uu and uu[0] not in ("null", "") and uu[1] not in ("1", "null"):
+            raise ValueError(
+                f"{p}ページ目が特殊な縮尺（UserUnit）を持っています。"
+                "塗る場所がずれるため、このPDFは処理できません")
+    base = base_shape if base_shape else shapes[pages[0]][:2]
+    diff = [p for p in pages if shapes[p][:2] != tuple(base)]
+    if diff:
+        nums = "・".join(str(p) for p in diff[:5])
+        raise ValueError(
+            f"{nums}ページ目の紙の形（向き・大きさ）が、枠を引いたときの紙と違います。"
+            "複合機の自動回転や、別々に取り込んだPDFの結合が原因のことが多いです。"
+            "向きをそろえてから読み込み直してください")
+
+
 # ---------------------------------------------------------------- マスキング
 def apply_masks(data: bytes, rects: list[dict], color: str, page_numbers: list[int]) -> bytes:
     """リダクションを適用したPDFのバイト列を返す。画像ピクセルも消去する。"""
@@ -180,17 +235,35 @@ def apply_masks(data: bytes, rects: list[dict], color: str, page_numbers: list[i
             # apply_redactions は文字を直接描く注釈（FreeText）なら消してくれるが、
             # 付箋やハイライトは残り、そのコメント欄に書かれた氏名も残ってしまう
             # （2026-08-18に実測で確認）。塗ると決めた範囲の情報は種類を問わず消す。
+            # 注釈の座標（annot.rect）は非回転座標系なので、比較は非回転側でそろえる。
+            # 表示座標のまま比べると、回転ページで枠の真下の付箋が消えず、
+            # 無関係な場所の注釈が消える（2026-08-22に実測）。
+            targets_unrot = [tr * page.derotation_matrix for tr in targets]
             for annot in list(page.annots() or []):
                 if annot.type[0] == fitz.PDF_ANNOT_REDACT:
                     continue  # いま自分で足したリダクション指定は消さない
-                if any(not (annot.rect & t).is_empty for t in targets):
+                if any(not (annot.rect & t).is_empty for t in targets_unrot):
                     page.delete_annot(annot)
+            # フォームの入力欄（Widget）は page.annots() の列挙に載らないので別に消す。
+            # 入力欄の値（氏名など）は見た目を塗っても値として残る（2026-08-22に実測）
+            for w in list(page.widgets() or []):
+                if any(not (w.rect & t).is_empty for t in targets_unrot):
+                    page.delete_widget(w)
 
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS)
+            # graphics=REMOVE_IF_TOUCHED: 線で書かれた筆跡（タブレット記入・描画ツール）は
+            # 黒く塗っても座標が残り、枠から20pt以上離れていないと既定では消えない
+            # （2026-08-22に実測。「復元不可能」の約束が破れていた）。枠に触れた線画は消す
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_PIXELS,
+                                  graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_TOUCHED)
         # メタデータの除去: スキャナが埋め込むタイトル・作成者等に
         # 個人情報が含まれる場合があるため、標準メタデータとXMPを消去する
         doc.set_metadata({})
         doc.del_xml_metadata()
+        # ページの絵として描かれない持ち物も落とす。生徒別のPDFを結合した束は
+        # 元のファイル名（＝氏名）がしおりの見出しになり、どのビューアでも
+        # サイドバーに出る（実在の142ページ束で人名114件が素通りした・2026-08-22実測）。
+        # 添付・フォーム定義・ページ縮小画像・構造ツリーも同様に、塗りも検査も届かない
+        _strip_baggage(doc)
         buf = io.BytesIO()
         doc.save(buf, garbage=4, deflate=True)
         return buf.getvalue()
@@ -198,43 +271,109 @@ def apply_masks(data: bytes, rects: list[dict], color: str, page_numbers: list[i
         doc.close()
 
 
-def find_blank_rects(data: bytes, rects: list[dict], page_numbers: list[int]) -> list[int]:
-    """塗る前の原本を見て、「元から何も無かった矩形」の番号を返す。
+def _strip_baggage(doc) -> None:
+    """ページの絵として描かれない持ち物を落とす（しおり・添付・入力欄の定義・
+    ページ縮小画像・構造ツリー・XMP残骸）。save(garbage=4) が実体を回収する。"""
+    root = doc.pdf_catalog()
+    for key in ("Outlines", "Names", "AcroForm", "StructTreeRoot", "OpenAction", "AF"):
+        if doc.xref_get_key(root, key)[0] != "null":
+            doc.xref_set_key(root, key, "null")
+    for page in doc:
+        for key in ("Thumb", "Metadata", "PieceInfo", "AF"):
+            if doc.xref_get_key(page.xref, key)[0] != "null":
+                doc.xref_set_key(page.xref, key, "null")
+
+
+def _rect_on_page(page, r: dict) -> "fitz.Rect":
+    pr = page.rect
+    return fitz.Rect(
+        pr.x0 + r["x0"] * pr.width, pr.y0 + r["y0"] * pr.height,
+        pr.x0 + r["x1"] * pr.width, pr.y0 + r["y1"] * pr.height,
+    )
+
+
+def probe_rects(data: bytes, rects: list[dict], page_numbers: list[int]) -> dict:
+    """塗る前の原本を、矩形×ページの粒度で調べる。
 
     塗ったあとの検査では、白紙を黒く塗っても「きれいに消えた」と判定されてしまう
     （指定範囲は確かに均一になっているため）。位置を間違えた矩形に気づくには、
-    塗る前に中身があったかを見るしかない。1ページでも中身があれば正常とみなす。
+    塗る前に中身があったかを見るしかない。
+
+    戻り値:
+      blank_rects   … 全対象ページで枠の下が空白だった矩形の番号（1始まり）
+      shifted_pages … ページ自体には中身があるのに、枠の下だけ空白のページ番号
+                      （＝そのページだけ枠がずれている疑い。白紙の裏面では鳴らない）
+      unknown_pages … 描画できず判定できなかったページ番号（合格に数えない）
+
+    以前は「1ページでも中身があれば正常」と打ち切っていたが、束の一部だけ枠が
+    ずれている場面（最も助けが要る場面）で必ず沈黙していた（2026-08-22に実測。
+    0.7mm角の薄い点1つで警告が消えた）。ページごとに判定する。
     """
-    blank = []
+    n = len(rects)
+    rect_hit = [set() for _ in range(n)]     # 矩形ごとの「中身があったページ」
+    shifted, unknown = set(), set()
     doc = fitz.open(stream=data, filetype="pdf")
     try:
-        for idx, r in enumerate(rects):
-            has_content = False
-            for pno in page_numbers:
-                page = doc[pno - 1]
-                pr = page.rect
-                rect = fitz.Rect(
-                    pr.x0 + r["x0"] * pr.width, pr.y0 + r["y0"] * pr.height,
-                    pr.x0 + r["x1"] * pr.width, pr.y0 + r["y1"] * pr.height,
-                )
-                # 文字があるか（テキスト層つきPDF）
-                if any(not (fitz.Rect(w[:4]) & rect).is_empty for w in page.get_text("words")):
-                    has_content = True
-                    break
-                # 絵柄に濃淡があるか（スキャン画像）。狭い範囲を粗く描くので軽い
-                try:
-                    pix = page.get_pixmap(clip=rect, dpi=50, colorspace=fitz.csGRAY)
-                except Exception:
-                    has_content = True  # 判定できないときは疑わない
-                    break
-                if pix.samples and (max(pix.samples) - min(pix.samples)) > 24:
-                    has_content = True
-                    break
-            if not has_content:
-                blank.append(idx + 1)
+        for pno in page_numbers:
+            page = doc[pno - 1]
+            # ページ自体に中身があるか（白紙の裏面と、ずれたページを区別する）
+            page_has = False
+            try:
+                whole = page.get_pixmap(dpi=25, colorspace=fitz.csGRAY)
+                page_has = bool(whole.samples) and (max(whole.samples) - min(whole.samples)) > 24
+            except Exception:
+                unknown.add(pno)
+                continue
+            words = page.get_text("words")
+            if words:
+                page_has = True
+            derot = page.derotation_matrix
+            page_rect_hit = False
+            for idx, r in enumerate(rects):
+                rect = _rect_on_page(page, r)
+                # 文字があるか。get_text("words") は回転に関わらず非回転座標を
+                # 返すので、比較は非回転側でそろえる（2026-08-22に実測で確定）
+                rect_unrot = rect * derot
+                hit = any(not (fitz.Rect(w[:4]) & rect_unrot).is_empty for w in words)
+                if not hit:
+                    # 絵柄に濃淡があるか（スキャン画像）。狭い範囲を粗く描くので軽い
+                    try:
+                        pix = page.get_pixmap(clip=rect, dpi=50, colorspace=fitz.csGRAY)
+                    except Exception:
+                        unknown.add(pno)   # 「判定できない」を中身ありに数えない
+                        continue
+                    hit = bool(pix.samples) and (max(pix.samples) - min(pix.samples)) > 24
+                if hit:
+                    rect_hit[idx].add(pno)
+                    page_rect_hit = True
+            if page_has and not page_rect_hit and rects:
+                shifted.add(pno)
     finally:
         doc.close()
-    return blank
+    return {
+        "blank_rects": [i + 1 for i in range(n)
+                        if not rect_hit[i] and any(p not in unknown for p in page_numbers)],
+        "shifted_pages": sorted(shifted),
+        "unknown_pages": sorted(unknown),
+    }
+
+
+def find_blank_rects(data: bytes, rects: list[dict], page_numbers: list[int]) -> list[int]:
+    """互換の殻：全対象ページで枠の下が空白だった矩形の番号を返す。"""
+    return probe_rects(data, rects, page_numbers)["blank_rects"]
+
+
+def _page_has_content(data: bytes, pno: int) -> bool:
+    """そのページの紙に中身（文字か絵柄）があるか。粗く見るだけなので軽い。"""
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        page = doc[pno - 1]
+        if page.get_text("words"):
+            return True
+        try:
+            pix = page.get_pixmap(dpi=25, colorspace=fitz.csGRAY)
+        except Exception:
+            return True   # 判定できないときは「残っているかもしれない」側へ
+        return bool(pix.samples) and (max(pix.samples) - min(pix.samples)) > 24
 
 
 def verify_masked(out_bytes: bytes, rects: list[dict], page_numbers: list[int]) -> dict:
@@ -281,7 +420,8 @@ def unique_out_path(name: str) -> Path:
 
 
 def mask_one_file(name: str, data: bytes, rects_raw, color: str,
-                  page_range: str, parity: str, n_pages: int) -> dict:
+                  page_range: str, parity: str, n_pages: int,
+                  base_shape=None) -> dict:
     """1ファイル分の一連の処理。app.py の /api/apply のループ内と同じ順序・同じ判定。
 
       矩形の整形 → ページ指定の解釈 → 塗る前の位置ずれ検出 → マスキング
@@ -289,36 +429,70 @@ def mask_one_file(name: str, data: bytes, rects_raw, color: str,
 
     戻り値は画面がそのまま表示できる形（ブラウザ版の results と同じ）。
     """
-    rects = clean_rects(rects_raw)
-    if not rects:  # 矩形未設定のファイルはスキップ（エラーにしない）
+    n_raw = len(list(rects_raw or []))
+    if n_raw == 0:  # 矩形未設定のファイルはスキップ（エラーにしない）
         return {"skipped": True, "name": name}
+    rects = clean_rects(rects_raw)
+    # 整形で矩形が減っていたら止める。範囲外の座標を黙って捨てると、画面は
+    # 「矩形2」なのに実際に塗るのは1件、という食い違いが起きる（2026-08-22に実測）。
+    # 全部が不正だった場合も「未設定スキップ」ではなくエラーとして知らせる
+    if len(rects) != n_raw:
+        raise ValueError(
+            f"矩形{n_raw}件のうち{n_raw - len(rects)}件が不正な座標です（範囲外・大きさゼロ）。"
+            "プリセットや設定を確かめて、枠を引き直してください")
 
     # 塗る紙（data）と、呼び出し側が数えたページ数（n_pages）が食い違っていないか。
     # 食い違うのは「読み込んだあと、実行するまでの間に原本が差し替わった」とき。
     # 見逃すと、増えたページは塗られず検査もされないまま「✓ 検査済み」で出てしまう
     # （2026-08-21に実機で再現。4→8ページの差し替えで5〜8ページの氏名が残った）。
     # 位置合わせの前提も崩れているので、続けずに止めるのが安全。
-    with fitz.open(stream=data, filetype="pdf") as _d:
-        real_pages = _d.page_count
-    if real_pages != n_pages:
-        raise ValueError(
-            f"読み込んだときから中身が変わっています（{n_pages}ページ→{real_pages}ページ）。"
-            "いったん取り除いて、読み込み直してください")
-
     pages = parse_page_spec(page_range, parity, n_pages)
     if not pages:
         raise ValueError("指定範囲に該当するページがありません")
 
+    with fitz.open(stream=data, filetype="pdf") as _d:
+        real_pages = _d.page_count
+        if real_pages != n_pages:
+            raise ValueError(
+                f"読み込んだときから中身が変わっています（{n_pages}ページ→{real_pages}ページ）。"
+                "いったん取り除いて、読み込み直してください")
+        # 紙の形の門番。束の中に形の違うページ・切り取り・特殊縮尺が混じっていたら
+        # 塗らずに止める（塗る側と検査側が同じだけずれ、✓のまま氏名が残るため）
+        check_page_shapes(_d, pages, base_shape)
+
     # 塗る前に「その場所に中身があるか」を見る（位置ずれの検出）
-    blank = find_blank_rects(data, rects, pages)
+    probe = probe_rects(data, rects, pages)
     out_bytes = apply_masks(data, rects, color, pages)
     # 書き出す前に、本当に消えているかを機械で確かめる
     check = verify_masked(out_bytes, rects, pages)
-    if blank:
-        nums = "・".join(f"{i}つ目" for i in blank)
-        check["reasons"].insert(
-            0, f"{nums}の枠は、塗る前から何もありませんでした（位置がずれていませんか）"
-        )
+    warn_msgs = []
+    if probe["blank_rects"]:
+        nums = "・".join(f"{i}つ目" for i in probe["blank_rects"])
+        warn_msgs.append(f"{nums}の枠は、塗る前から何もありませんでした（位置がずれていませんか）")
+    if probe["shifted_pages"]:
+        nums = "・".join(str(p) for p in probe["shifted_pages"][:8])
+        warn_msgs.append(
+            f"{nums}ページ目は、紙に中身があるのに枠の下だけ空白でした（そのページだけ枠がずれていませんか）")
+    if probe["unknown_pages"]:
+        nums = "・".join(str(p) for p in probe["unknown_pages"][:8])
+        warn_msgs.append(f"{nums}ページ目は塗る前の確認ができませんでした（現物を確かめてください）")
+    # ページ範囲・奇数偶数で外したページは、塗られても検査されてもいない。
+    # 枠の下に中身が残ったままなら知らせる（正当な範囲絞りを誤警報にしないため、
+    # 「枠の下に中身があるページ」だけを挙げる）
+    excluded = [p for p in range(1, n_pages + 1) if p not in set(pages)]
+    if excluded:
+        left = probe_rects(data, rects, excluded)
+        # 「枠の下に中身が残っているページ」＝紙に中身があり、枠が空白でも判定不能でもない
+        skip = set(left["shifted_pages"]) | set(left["unknown_pages"])
+        remain = [p for p in excluded
+                  if p not in skip and _page_has_content(data, p)]
+        if remain:
+            nums = "・".join(str(p) for p in remain[:8])
+            warn_msgs.append(
+                f"対象外にした{nums}ページ目には、枠の場所に中身が残ったままです（塗っても検査してもいません）")
+    if warn_msgs:
+        for m in reversed(warn_msgs):
+            check["reasons"].insert(0, m)
         if check["verdict"] == "ok":
             check["verdict"] = "warn"
 
@@ -334,6 +508,8 @@ def mask_one_file(name: str, data: bytes, rects_raw, color: str,
         "name": name,
         "output": out_path.name,
         "pagesMasked": len(pages),
+        "totalPages": n_pages,
+        "excludedPages": len(excluded),
         "check": check,
     }
 
@@ -357,16 +533,22 @@ def list_presets() -> list[dict]:
     return presets
 
 
-def save_preset(name: str, rects_raw, color: str, page_range: str, parity: str) -> str:
+def save_preset(name: str, rects_raw, color: str, page_range: str, parity: str,
+                shape=None) -> str:
     name = safe_preset_name(name)
     rects = clean_rects(rects_raw)
     if not rects:
         raise ValueError("保存する矩形がありません")
+    if len(rects) != len(list(rects_raw or [])):
+        raise ValueError("不正な座標の矩形が含まれています。枠を引き直してください")
     preset = {
         "rects": rects,
         "color": color or "black",
         "range": page_range or "",
         "parity": parity or "all",
+        # 枠を引いたときの紙の形（縦横比・回転）。読み込んだ先で照合する。
+        # 古いプリセット（この項目が無いもの）はそのまま読める
+        "shape": list(shape) if shape else [],
         "saved": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
     PRESET_DIR.mkdir(parents=True, exist_ok=True)
