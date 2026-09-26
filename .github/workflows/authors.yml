@@ -1,0 +1,30 @@
+# 履歴の作者・記録者が匿名アドレスだけであることを、プッシュのたびに確かめる
+#
+# 2026-09-26：8/21〜23の8コミットが実名・個人メールで記録されたまま公開直前まで
+# 気づかれなかった。手元の柵（.git/hooks）は複製先には付いてこないので、
+# GitHub側にも同じ検査を置く。1件でも混じれば失敗して知らせる。
+name: authors
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["**"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 作者・記録者を全履歴で確かめる
+        shell: bash
+        run: |
+          ALLOWED="317276885+zenryoku15pct@users.noreply.github.com"
+          bad=$(git log --all --format='%h %ae %ce' | awk -v ok="$ALLOWED" '$2!=ok || $3!=ok')
+          if [ -n "$bad" ]; then
+            echo "匿名アドレス以外の作者・記録者があります："
+            echo "$bad"
+            exit 1
+          fi
+          echo "全履歴 $(git rev-list --all --count) コミット：作者・記録者はすべて $ALLOWED"
