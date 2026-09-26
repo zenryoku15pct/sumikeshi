@@ -591,32 +591,32 @@ def edges_of(data, rects, color):
 
 for color in ("black", "white"):
     e = edges_of(over, rects1, color)
-    check(f"はみ出した字を4ページとも右辺で拾う（{color}）",
+    check(f"はみ出した字を4ページとも右辺で見つける（{color}）",
           all(x == ["枠1の右"] for x in e), str(e))
 r = masking.mask_one_file("はみ出し.pdf", over, rects1, "black", "", "all", 4)
 check("アプリの実行時の検査でも⚠要確認になり、理由に「枠の縁」が出る",
       r["check"]["verdict"] == "warn" and r["check"]["warnPages"] == pages4
       and any("枠の縁" in x for x in r["check"]["reasons"]), str(r["check"]))
-check("欄に収まった字は鳴らない（黒・白）",
+check("欄に収まった字は警告は出ない（黒・白）",
       not any(edges_of(fixed, rects1, "black")) and not any(edges_of(fixed, rects1, "white")))
 cross = [{"x0": 0.5418, "y0": 0.095, "x1": 0.9273, "y1": 0.195}]
-check("欄の枠線が帯を横切っても鳴らない", not any(edges_of(fixed, cross, "black")),
+check("欄の枠線が帯を横切っても警告は出ない", not any(edges_of(fixed, cross, "black")),
       str(edges_of(fixed, cross, "black")))
 two = [{"x0": 0.5418, "y0": 0.1080, "x1": 0.70, "y1": 0.1825},
        {"x0": 0.70, "y0": 0.1080, "x1": 0.9273, "y1": 0.1825}]
 check("隣り合う2枠の黒塗りを字と間違えない（Codex校閲2-2）", not any(edges_of(fixed, two, "black")),
       str(edges_of(fixed, two, "black")))
 e = edges_of(over, two, "black")
-check("隣り合う2枠でも、はみ出した側（枠2の右）だけ鳴る", all(x == ["枠2の右"] for x in e), str(e))
+check("隣り合う2枠でも、はみ出した側（枠2の右）だけ警告が出る", all(x == ["枠2の右"] for x in e), str(e))
 top = [{"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.08}]
-check("枠のすぐ下の見出し（縁につながらない塊）で鳴らない（Codex校閲2-1）",
+check("枠のすぐ下の見出し（縁につながらない塊）で警告は出ない（Codex校閲2-1）",
       not any(edges_of(fixed, top, "black")), str(edges_of(fixed, top, "black")))
-# 右端を「組」の字の途中（字の先頭から34pt・32〜36ptで4ページとも鳴る）に置く。切る位置が
-# 空白や細い画に当たると拾えないので（9/26実測：3ptごと66か所のうち鳴ったのは22か所）、
-# 拾える位置を固定する
+# 右端を「組」の字の途中（字の先頭から34pt・32〜36ptで4ページとも警告が出る）に置く。切る位置が
+# 空白や細い画に当たると見つけられないので（9/26実測：3ptごと66か所のうち警告が出たのは22か所）、
+# 見つけられる位置を固定する
 half = [{"x0": 0.5418, "y0": 0.1080, "x1": 0.6124, "y1": 0.1825}]
 e = edges_of(fixed, half, "black")
-check("字の途中で切る枠は右辺で鳴る", all(x == ["枠1の右"] for x in e), str(e))
+check("字の途中で切る枠は右辺で警告が出る", all(x == ["枠1の右"] for x in e), str(e))
 
 
 # 以下3組はCodex校閲（2回目・2026-09-26）の提案どおり。四辺の向き・回転・用紙端を
@@ -633,19 +633,19 @@ def edge_probe(ink, rotation=0, right=100, width=180):
 
 
 for rot, side in ((0, "右"), (90, "下"), (180, "左"), (270, "上")):
-    check(f"縁に接する画は回転{rot}°でも対応する辺（{side}）で鳴る",
+    check(f"縁に接する画は回転{rot}°でも対応する辺（{side}）で警告が出る",
           edge_probe((100, 60, 104, 66), rot) == [f"枠1の{side}"],
           str(edge_probe((100, 60, 104, 66), rot)))
 for rot in (0, 90, 180, 270):
-    check(f"8pt離れた塊は回転{rot}°でも鳴らない（左・上で逆向きに見ていた）",
+    check(f"8pt離れた塊は回転{rot}°でも警告は出ない（左・上で逆向きに見ていた）",
           not edge_probe((108, 60, 112, 66), rot), str(edge_probe((108, 60, 112, 66), rot)))
 for gap in (0.5, 1.0, 1.5):
-    check(f"用紙端まで{gap}ptしか無い帯でも残った画を拾う",
+    check(f"用紙端まで{gap}ptしか無い帯でも残った画を見つける",
           edge_probe((100 - gap, 60, 100, 66), right=100 - gap, width=100) == ["枠1の右"])
-    check(f"用紙端まで{gap}ptの帯が白紙なら鳴らない",
+    check(f"用紙端まで{gap}ptの帯が白紙なら警告は出ない",
           not edge_probe(None, right=100 - gap, width=100))
 # 枠を字の高さにぴったり合わせても、はみ出した字の縦画を「縁に沿う線」と間違えない
-check("枠が字の高さぴったりでも、縁に接する縦画を拾う（Codex校閲2回目・指摘2）",
+check("枠が字の高さぴったりでも、縁に接する縦画を見つける（Codex校閲2回目・指摘2）",
       edge_probe((100, 50, 104, 90)) == ["枠1の右"], str(edge_probe((100, 50, 104, 90))))
 
 shutil.rmtree(TMP, ignore_errors=True)

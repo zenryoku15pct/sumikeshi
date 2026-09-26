@@ -16,7 +16,7 @@
 マスク領域の決め方（3段構え）
   1. --preset / --rects で明示指定（最も確実）
   2. 指定がなければ自動検出（黒または白の均一な矩形ブロックを探す）
-  3. どちらでも見つからなければ「マスク痕跡なし」として要確認に落とす
+  3. どちらでも見つからなければ「マスク痕跡なし」として要確認にする
 
 使い方
   python3 check_masked.py output/xxx_masked.pdf
@@ -80,7 +80,7 @@ MIN_MASK_W_PT = 10.0       # マスクとみなす最小の幅(pt)
 MIN_MASK_H_PT = 5.0        # マスクとみなす最小の高さ(pt)
 MIN_REGION_PX = 4          # これ未満の交差画素数はレイヤー判定から除く
 
-# [1.5] 枠の縁：枠のすぐ外側の帯を見て、縁を横切って外へ続く字を拾う
+# [1.5] 枠の縁：枠のすぐ外側の帯を見て、縁を横切って外へ続く字を見つける
 EDGE_BAND_PT = 12          # 見る帯の幅（pt）。1文字ぶんより少し広い
 EDGE_ZOOM = 2.0            # 帯を描く倍率（72dpi×2）
 EDGE_ROW_FRAC = 0.15       # 行（列）の幅のこれ以上が暗ければ「字の行」とみなす
@@ -283,9 +283,9 @@ def edge_overflow(page, disp_rects) -> list[str]:
     枠の四辺それぞれのすぐ外側の帯（幅 EDGE_BAND_PT）を描画し、帯の幅の
     EDGE_ROW_FRAC 以上が暗い行が EDGE_MIN_RUN_PT 以上続く塊を「縁を横切る字」と
     みなす。縁に沿って走る罫線（欄の枠線・用紙の外枠）は各行に1〜2画素しか載らず、
-    縁を横切る罫線（下線・表の横線）は1〜2行しか続かないので、どちらも拾わない。
+    縁を横切る罫線（下線・表の横線）は1〜2行しか続かないので、どちらも見つけない。
 
-    合格を出す仕組みではなく、要確認に落とすための網。氏名が欄より長く書かれて
+    合格を出す仕組みではなく、要確認にするための網。氏名が欄より長く書かれて
     いても、枠の内側だけを見る[1]〜[3]は「枠内クリア」を出す。2026-09-26、お試し用
     PDFの氏名が欄から13ptはみ出したまま1か月気づかれず、作者本人が実機テストで
     「OKが出た」と読んだ。マスク枠から離れた別欄の氏名は、この網でも見えない。
@@ -321,7 +321,7 @@ def edge_overflow(page, disp_rects) -> list[str]:
                 return s[y * st + x] < EDGE_DARK
 
             # 数えない画素：隣り合う別の枠の内側（黒塗りが帯に入り、字と区別できない。
-            # クラス欄と氏名欄を並べて塗ると互いの縁が鳴った・Codex校閲1回目 2-2）。
+            # クラス欄と氏名欄を並べて塗ると互いの縁が警告が出た・Codex校閲1回目 2-2）。
             # 始点は切り捨て・終点は切り上げで、黒塗りの画素を数え残さない側に丸める
             skip = [bytearray(n_across) for _ in range(n_lines)]
             for j, o in enumerate(rects):
@@ -369,7 +369,7 @@ def edge_overflow(page, disp_rects) -> list[str]:
                     continue
                 if run / Z >= EDGE_MIN_RUN_PT:
                     # 塊が縁のすぐ外側に無ければ字のはみ出しではない（枠のすぐ下の見出し・
-                    # 隣欄の印字・ハンコ。縁から離れた黒い塊で鳴った・Codex校閲1回目 2-1）
+                    # 隣欄の印字・ハンコ。縁から離れた黒い塊で警告が出た・Codex校閲1回目 2-1）
                     touching = any(dark(l, k) for l in range(line - run, line)
                                    for k in near if not skip[l][k])
                     if touching:
@@ -527,7 +527,7 @@ def check_page(doc, page, rects_norm, opt):
             if npx < MIN_REGION_PX:
                 # 解像度の低い層（MRCの背景層など）ではマスク枠が数画素に潰れて
                 # 判定できない。以前は記録も残さず外していたが、「確認できない」を
-                # 合格に数えない原則（本ファイル冒頭）に合わせて要確認に落とす
+                # 合格に数えない原則（本ファイル冒頭）に合わせて要確認にする
                 res["layers"].append({"idx": idx + 1, "xref": xref, "ok": None,
                                       "px": npx, "spread": None, "lo": None, "hi": None})
                 if res["verdict"] == OK:
@@ -744,7 +744,7 @@ def main():
     ap.add_argument("--inset", type=int, default=DEFAULT_INSET,
                     help=f"判定領域を内側へ縮める画素数（既定 {DEFAULT_INSET}。境界のにじみ対策）")
     ap.add_argument("--detect-white", action="store_true",
-                    help="白マスクも自動検出する（紙の余白を拾いやすいので通常は使わない）")
+                    help="白マスクも自動検出する（紙の余白を見つけやすいので通常は使わない）")
     ap.add_argument("--pages", help="検査するページ（例 1-10,15）。既定は全ページ")
     ap.add_argument("--report", help="レポートの出力先（既定 output/検査レポート_日時.md）")
     ap.add_argument("--no-report", action="store_true", help="レポートを書き出さない")
