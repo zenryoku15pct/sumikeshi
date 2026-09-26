@@ -12,7 +12,7 @@
         4
       ],
       "blank": [],
-      "verdict": "ok",
+      "verdict": "warn",
       "size": 183014,
       "sha256": "8dc5c60afbfa04b0accae5290d25e6549feb7956b6b13b72ff1afd8e00ca442d"
     },
@@ -25,7 +25,7 @@
         4
       ],
       "blank": [],
-      "verdict": "ok",
+      "verdict": "warn",
       "size": 176583,
       "sha256": "9d9ec8ac34446aa6b9ba994ddb7dd71c55cfb3ed779a1d1ff49d87020be08fe4"
     },
@@ -49,7 +49,7 @@
         2
       ],
       "blank": [],
-      "verdict": "ok",
+      "verdict": "warn",
       "size": 195169,
       "sha256": "2ab06bdc243933940ef7d2902b981b4d1741e080e7590ae2df9cc3be0f291cf5"
     },
@@ -60,7 +60,7 @@
         3
       ],
       "blank": [],
-      "verdict": "ok",
+      "verdict": "warn",
       "size": 198258,
       "sha256": "509791c248894afa5908a51f8520ee5fdd228413f2600fefef090133b4a13603"
     },
@@ -71,7 +71,7 @@
         4
       ],
       "blank": [],
-      "verdict": "ok",
+      "verdict": "warn",
       "size": 198593,
       "sha256": "41ccd6472a3a53a18237212bad145274d404969a73a2e70858ed24bdb04ff0fc"
     },

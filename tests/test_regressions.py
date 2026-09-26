@@ -618,6 +618,36 @@ half = [{"x0": 0.5418, "y0": 0.1080, "x1": 0.6124, "y1": 0.1825}]
 e = edges_of(fixed, half, "black")
 check("字の途中で切る枠は右辺で鳴る", all(x == ["枠1の右"] for x in e), str(e))
 
+
+# 以下3組はCodex校閲（2回目・2026-09-26）の提案どおり。四辺の向き・回転・用紙端を
+# 小さな合成ページで直接突く（見本のPDFは右辺しか試せない）
+def edge_probe(ink, rotation=0, right=100, width=180):
+    with fitz.open() as d:
+        p = d.new_page(width=width, height=160)
+        r = fitz.Rect(50, 50, right, 90)
+        p.draw_rect(r, color=None, fill=(0,))
+        if ink is not None:
+            p.draw_rect(ink, color=None, fill=(0,))
+        p.set_rotation(rotation)
+        return _ckh.edge_overflow(p, [r * p.rotation_matrix])
+
+
+for rot, side in ((0, "右"), (90, "下"), (180, "左"), (270, "上")):
+    check(f"縁に接する画は回転{rot}°でも対応する辺（{side}）で鳴る",
+          edge_probe((100, 60, 104, 66), rot) == [f"枠1の{side}"],
+          str(edge_probe((100, 60, 104, 66), rot)))
+for rot in (0, 90, 180, 270):
+    check(f"8pt離れた塊は回転{rot}°でも鳴らない（左・上で逆向きに見ていた）",
+          not edge_probe((108, 60, 112, 66), rot), str(edge_probe((108, 60, 112, 66), rot)))
+for gap in (0.5, 1.0, 1.5):
+    check(f"用紙端まで{gap}ptしか無い帯でも残った画を拾う",
+          edge_probe((100 - gap, 60, 100, 66), right=100 - gap, width=100) == ["枠1の右"])
+    check(f"用紙端まで{gap}ptの帯が白紙なら鳴らない",
+          not edge_probe(None, right=100 - gap, width=100))
+# 枠を字の高さにぴったり合わせても、はみ出した字の縦画を「縁に沿う線」と間違えない
+check("枠が字の高さぴったりでも、縁に接する縦画を拾う（Codex校閲2回目・指摘2）",
+      edge_probe((100, 50, 104, 90)) == ["枠1の右"], str(edge_probe((100, 50, 104, 90))))
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + "=" * 60)
 print("すべて通りました。" if not fails else f"通らなかった項目 {len(fails)} 件: {fails}")
