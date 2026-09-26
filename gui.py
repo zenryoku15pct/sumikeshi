@@ -174,7 +174,9 @@ class PageCanvas(QWidget):
         super().__init__()
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        self.setMinimumSize(340, 400)
+        # 高さの最小は控えめに。ここが大きいと窓全体の最小高さを押し上げ、
+        # 使える高さの少ないノートPCで下が切れる（2026-09-26）
+        self.setMinimumSize(340, 280)
         self._pix: QPixmap | None = None
         self.rects: list = []
         self.selected = -1
@@ -912,8 +914,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — PDFマスキングツール")
-        self.resize(1220, 830)
-        self.setMinimumSize(980, 640)
+        self.setMinimumSize(900, 530)
         self.setAcceptDrops(True)
 
         self.entries: list[DocEntry] = []
@@ -953,6 +954,29 @@ class MainWindow(QMainWindow):
         self.refresh_presets()
         self.render_all()
         self.update_paste_button()
+        self.fit_to_screen()
+
+    def fit_to_screen(self, avail=None) -> None:
+        """起動時の窓を、画面の使える範囲（タスクバー等を除く）に収める。
+
+        Windows は画面より大きい窓を、はみ出したまま出す（Mac は画面に収める）。
+        以前の既定 1220×830・最小 980×640 は、ノートPC（1366×768・拡大125%＝
+        使える高さ約590）に入らず、はみ出した下の部分が見えないため、左側の
+        スクロールを一番下まで下げても「検査」のボタンが画面の外にあった
+        （2026-09-26 Windows実機テストで先生が発見。最大化すると見える）。
+        """
+        if avail is None:
+            scr = QGuiApplication.primaryScreen()
+            if scr is None:
+                self.resize(1220, 830)
+                return
+            avail = scr.availableGeometry()
+        margin = 24
+        w = max(self.minimumWidth(), min(1220, avail.width() - margin))
+        h = max(self.minimumHeight(), min(830, avail.height() - margin))
+        self.resize(w, h)
+        self.move(avail.x() + max(0, (avail.width() - w) // 2),
+                  avail.y() + max(0, (avail.height() - h) // 2))
 
     # ============================================================ 組み立て
     def _build_header(self) -> QWidget:

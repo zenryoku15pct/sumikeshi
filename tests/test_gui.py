@@ -290,6 +290,24 @@ else:
           f'枠内クリア {count2("枠内クリア")} 件')
     d2.close()
 
+print("\n【12】起動時の窓は画面の使える範囲に収まる（Windowsで「検査」が画面の外・2026-09-26）")
+from PySide6.QtCore import QRect
+w2 = gui.MainWindow()
+w2.fit_to_screen(QRect(0, 0, 1093, 590))   # 1366×768・拡大125%のノートPCの使える範囲
+w2.show(); pump()
+check("窓の高さが使える範囲に収まる", w2.height() <= 590, str(w2.size()))
+check("窓の幅も収まる", w2.width() <= 1093, str(w2.size()))
+lay2 = w2.centralWidget().layout()
+check("中身の最小高さが窓に収まる（下が切れない）",
+      lay2.minimumSize().height() <= w2.height(),
+      f"中身の最小 {lay2.minimumSize().height()} / 窓 {w2.height()}")
+sb2 = w2.sidebar
+check("左側を一番下まで下げると、中身の下端（検査ボタン）まで見える",
+      sb2.verticalScrollBar().maximum() + sb2.viewport().height()
+      >= sb2.widget().sizeHint().height() - 2,
+      f"最大 {sb2.verticalScrollBar().maximum()} + 表示枠 {sb2.viewport().height()} / 内容 {sb2.widget().sizeHint().height()}")
+w2.close()
+
 shutil.rmtree(tmp, ignore_errors=True)
 for f in masking.OUTPUT_DIR.glob("*_masked*.pdf"):
     f.unlink()
