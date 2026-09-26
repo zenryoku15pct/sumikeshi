@@ -82,7 +82,8 @@ MIN_REGION_PX = 4          # これ未満の交差画素数はレイヤー判定
 # [1.5] 枠の縁：枠のすぐ外側の帯を見て、縁を横切って外へ続く字を拾う
 EDGE_BAND_PT = 12          # 見る帯の幅（pt）。1文字ぶんより少し広い
 EDGE_ZOOM = 2.0            # 帯を描く倍率（72dpi×2）
-EDGE_ROW_FRAC = 0.25       # 行（列）の幅のこれ以上が暗ければ「字の行」とみなす
+EDGE_ROW_FRAC = 0.15       # 行（列）の幅のこれ以上が暗ければ「字の行」とみなす
+                           # （0.25では白塗りで細い末尾の字を見逃した・2026-09-26実測）
 EDGE_MIN_RUN_PT = 3.0      # 字の行がこれ以上続けば字とみなす（縁を横切る罫線は1〜2pt）
 EDGE_DARK = 150            # これより暗い画素をインクとみなす（0〜255）
 
@@ -290,8 +291,8 @@ def edge_overflow(page, disp_rects) -> list[str]:
     """
     found = []
     pr = page.rect
-    for i, r in enumerate(disp_rects):
-        r = fitz.Rect(r)
+    rects = [fitz.Rect(r) for r in disp_rects]
+    for i, r in enumerate(rects):
         bands = (("右", fitz.Rect(r.x1, r.y0, r.x1 + EDGE_BAND_PT, r.y1), "y"),
                  ("左", fitz.Rect(r.x0 - EDGE_BAND_PT, r.y0, r.x0, r.y1), "y"),
                  ("上", fitz.Rect(r.x0, r.y0 - EDGE_BAND_PT, r.x1, r.y0), "x"),
@@ -303,20 +304,60 @@ def edge_overflow(page, disp_rects) -> list[str]:
             pix = page.get_pixmap(matrix=fitz.Matrix(EDGE_ZOOM, EDGE_ZOOM), clip=clip,
                                   colorspace=fitz.csGRAY, alpha=False)
             w, h, st, s = pix.width, pix.height, pix.stride, pix.samples
-            if along == "y":      # 縦の辺：行ごとに、帯の幅のうち暗い割合
-                frac = [sum(1 for x in range(w) if s[y * st + x] < EDGE_DARK) / w
-                        for y in range(h)]
-            else:                 # 横の辺：列ごとに、帯の高さのうち暗い割合
-                frac = [sum(1 for y in range(h) if s[y * st + x] < EDGE_DARK) / h
-                        for x in range(w)]
+            # 縦の辺は行ごと・横の辺は列ごとに見る。以下「行」と書くのは走る向きの1本
+            n_lines, n_across = (h, w) if along == "y" else (w, h)
+
+            def dark(line, k):
+                y, x = (line, k) if along == "y" else (k, line)
+                return s[y * st + x] < EDGE_DARK
+
+            # 数えない画素：隣り合う別の枠の内側（黒塗りが帯に入り、字と区別できない。
+            # クラス欄と氏名欄を並べて塗ると互いの縁が鳴った・2026-09-26 Codex校閲）
+            skip = [bytearray(n_across) for _ in range(n_lines)]
+            for j, o in enumerate(rects):
+                if j == i:
+                    continue
+                ov = o & clip
+                if ov.is_empty:
+                    continue
+                ox0 = max(0, int((ov.x0 - clip.x0) * EDGE_ZOOM))
+                oy0 = max(0, int((ov.y0 - clip.y0) * EDGE_ZOOM))
+                ox1 = min(w, int(round((ov.x1 - clip.x0) * EDGE_ZOOM)))
+                oy1 = min(h, int(round((ov.y1 - clip.y0) * EDGE_ZOOM)))
+                for y in range(oy0, oy1):
+                    for x in range(ox0, ox1):
+                        line, k = (y, x) if along == "y" else (x, y)
+                        skip[line][k] = 1
+            # 縁に沿って走る線（欄の枠線・用紙の外枠・黒塗りの縁のにじみ）は、帯の
+            # 同じ位置がほぼ全行で暗い。太さや本数に関わらず、その位置ごと数えない
+            across_dark = [sum(1 for line in range(n_lines)
+                               if not skip[line][k] and dark(line, k))
+                           for k in range(n_across)]
+            along_line = [k for k in range(n_across) if across_dark[k] >= 0.9 * n_lines]
+            # 縁に近い側の画素（帯の手前2pt）。塊が縁につながっているかをここで見る
+            near = [k for k in range(min(n_across, int(2 * EDGE_ZOOM)))
+                    if k not in along_line]
             run = 0
-            for v in frac + [0.0]:
+            for line in range(n_lines + 1):
+                if line < n_lines:
+                    cols = [k for k in range(n_across)
+                            if not skip[line][k] and k not in along_line]
+                    v = (sum(1 for k in cols if dark(line, k)) / len(cols)
+                         if len(cols) >= 4 else 0.0)
+                else:
+                    v = 0.0
                 if v >= EDGE_ROW_FRAC:
                     run += 1
                     continue
                 if run / EDGE_ZOOM >= EDGE_MIN_RUN_PT:
-                    found.append(f"枠{i + 1}の{name}")
-                    break
+                    # 塊が縁につながっていなければ字のはみ出しではない（枠のすぐ下の
+                    # 見出し・隣欄の印字・ハンコ。縁から離れた黒い塊で鳴った・
+                    # 2026-09-26 Codex校閲2-1）。縁を横切る字は縁のすぐ外側にも画素がある
+                    touching = any(dark(l, k) for l in range(line - run, line)
+                                   for k in near if not skip[l][k])
+                    if touching:
+                        found.append(f"枠{i + 1}の{name}")
+                        break
                 run = 0
     return found
 
@@ -434,7 +475,7 @@ def check_page(doc, page, rects_norm, opt):
         if RANK[WARN] > RANK[res["verdict"]]:
             res["verdict"] = WARN
         res["reasons"].append(
-            f"枠の縁を横切って外へ続く字がある（{'・'.join(edges)}）"
+            f"枠の縁のすぐ外側に、縁につながる暗い部分がある（{'・'.join(edges)}）"
             "——字が枠より長い疑い。枠を広げて塗り直してください")
 
     # ---- [1] 画像レイヤー

@@ -573,6 +573,51 @@ import check_masked as _ck2
 listed = sorted(q.name for q in workG.iterdir() if q.is_file() and q.suffix.lower() == ".pdf")
 check("大文字拡張子（.PDF）も検査の列挙に入る判定式である", "大文字.PDF" in listed, str(listed))
 
+print("\n【原因H】枠より長い字を「枠内クリア」と言わない（検査[1.5] 枠の縁）")
+# 2026-09-26 Windows実機テスト：お試し用PDFの氏名が欄より13pt長く、欄どおりに塗ると
+# 最後の1字が枠の外に残るのに✓が出た。事故の形（overflow=True）をここに固定する
+import make_dummy_sample as _mds
+import check_masked as _ckh
+over = _mds.build_bytes(overflow=True)
+fixed = _mds.build_bytes()
+pages4 = [1, 2, 3, 4]
+
+
+def edges_of(data, rects, color):
+    out = masking.apply_masks(data, rects, color, pages4)
+    with fitz.open(stream=out, filetype="pdf") as d:
+        return [_ckh.edge_overflow(p, [_ckh.norm_to_page(p, r) for r in rects]) for p in d]
+
+
+for color in ("black", "white"):
+    e = edges_of(over, rects1, color)
+    check(f"はみ出した字を4ページとも右辺で拾う（{color}）",
+          all(x == ["枠1の右"] for x in e), str(e))
+r = masking.mask_one_file("はみ出し.pdf", over, rects1, "black", "", "all", 4)
+check("アプリの実行時の検査でも⚠要確認になり、理由に「枠の縁」が出る",
+      r["check"]["verdict"] == "warn" and r["check"]["warnPages"] == pages4
+      and any("枠の縁" in x for x in r["check"]["reasons"]), str(r["check"]))
+check("欄に収まった字は鳴らない（黒・白）",
+      not any(edges_of(fixed, rects1, "black")) and not any(edges_of(fixed, rects1, "white")))
+cross = [{"x0": 0.5418, "y0": 0.095, "x1": 0.9273, "y1": 0.195}]
+check("欄の枠線が帯を横切っても鳴らない", not any(edges_of(fixed, cross, "black")),
+      str(edges_of(fixed, cross, "black")))
+two = [{"x0": 0.5418, "y0": 0.1080, "x1": 0.70, "y1": 0.1825},
+       {"x0": 0.70, "y0": 0.1080, "x1": 0.9273, "y1": 0.1825}]
+check("隣り合う2枠の黒塗りを字と間違えない（Codex校閲2-2）", not any(edges_of(fixed, two, "black")),
+      str(edges_of(fixed, two, "black")))
+e = edges_of(over, two, "black")
+check("隣り合う2枠でも、はみ出した側（枠2の右）だけ鳴る", all(x == ["枠2の右"] for x in e), str(e))
+top = [{"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 0.08}]
+check("枠のすぐ下の見出し（縁につながらない塊）で鳴らない（Codex校閲2-1）",
+      not any(edges_of(fixed, top, "black")), str(edges_of(fixed, top, "black")))
+# 右端を「組」の字の途中（字の先頭から34pt・32〜36ptで4ページとも鳴る）に置く。切る位置が
+# 空白や細い画に当たると拾えないので（9/26実測：3ptごと66か所のうち鳴ったのは22か所）、
+# 拾える位置を固定する
+half = [{"x0": 0.5418, "y0": 0.1080, "x1": 0.6124, "y1": 0.1825}]
+e = edges_of(fixed, half, "black")
+check("字の途中で切る枠は右辺で鳴る", all(x == ["枠1の右"] for x in e), str(e))
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + "=" * 60)
 print("すべて通りました。" if not fails else f"通らなかった項目 {len(fails)} 件: {fails}")

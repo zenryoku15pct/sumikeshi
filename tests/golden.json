@@ -84,7 +84,7 @@
         4
       ],
       "blank": [],
-      "verdict": "warn",
+      "verdict": "ok",
       "size": 207209,
       "sha256": "f9edaccd0eabd7067b4f25e43f4cb3f0f6cf7c7029931a7f00c89512dd7f0bd3"
     },

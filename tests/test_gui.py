@@ -236,8 +236,10 @@ check("実行ボタンが押せなくなる", not win.apply_btn.isEnabled())
 print("\n【11】漏れサンプルの検査（見逃していないか）")
 leak = BASE / "samples/leak-check"
 RECT_LEAK = {"x0": 0.5418, "y0": 0.1080, "x1": 0.9273, "y1": 0.1825}
-if not leak.is_dir():
-    print("  --  漏れサンプルが無いので省略（python3 make_leak_samples.py で作れます）")
+if not leak.is_dir() or len(list(leak.glob("*.pdf"))) < 8:
+    # 見本が無ければ「省略」ではなく不合格にする（無いまま通ると検査の試験が
+    # 丸ごと抜ける・2026-09-26 Codex校閲5-2）
+    check("漏れサンプル8本がある（python3 make_leak_samples.py で作る）", False, str(leak))
 else:
     import check_masked as ck
     d = gui.CheckDialog()
