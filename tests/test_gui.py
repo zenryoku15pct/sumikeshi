@@ -302,10 +302,14 @@ check("中身の最小高さが窓に収まる（下が切れない）",
       lay2.minimumSize().height() <= w2.height(),
       f"中身の最小 {lay2.minimumSize().height()} / 窓 {w2.height()}")
 sb2 = w2.sidebar
-check("左側を一番下まで下げると、中身の下端（検査ボタン）まで見える",
-      sb2.verticalScrollBar().maximum() + sb2.viewport().height()
-      >= sb2.widget().sizeHint().height() - 2,
-      f"最大 {sb2.verticalScrollBar().maximum()} + 表示枠 {sb2.viewport().height()} / 内容 {sb2.widget().sizeHint().height()}")
+# 物差しは「検査ボタンの実際の位置」。推奨サイズ（sizeHint）で測ると、実際に並べられた
+# 高さがそれより小さい環境（Mac の CI・字の幅の違い）で、見えているのに不合格になった（9/26）
+from PySide6.QtWidgets import QPushButton as _QPB
+chk_btn = next(b for b in sb2.widget().findChildren(_QPB) if "検査する" in b.text())
+btn_bottom = chk_btn.mapTo(sb2.widget(), chk_btn.rect().bottomLeft()).y()
+reach = sb2.verticalScrollBar().maximum() + sb2.viewport().height()
+check("左側を一番下まで下げると、検査ボタンの下端まで見える", btn_bottom <= reach,
+      f"ボタン下端 {btn_bottom} / 見える下端 {reach}（最大 {sb2.verticalScrollBar().maximum()} + 表示枠 {sb2.viewport().height()}）")
 w2.close()
 
 shutil.rmtree(tmp, ignore_errors=True)
