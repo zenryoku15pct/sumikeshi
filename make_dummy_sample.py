@@ -36,8 +36,13 @@ GOALS = [
 ]
 
 
-def draw_page(doc, idx: int) -> fitz.Page:
-    """1ページぶんのダミー調査票をベクターで描く。"""
+def draw_page(doc, idx: int, overflow: bool = False) -> fitz.Page:
+    """1ページぶんのダミー調査票をベクターで描く。
+
+    overflow=True は「氏名が欄から右へはみ出した紙」。2026-08-21〜09-26のお試し用PDFは
+    意図せずこの形で（13ptで欄より13pt長い）、欄どおりに塗ると「郎」が枠の外に残るのに
+    「枠内クリア」が出た。いまは漏れ見本08（make_leak_samples.py）だけがこの形を使う。
+    """
     page = doc.new_page(width=595, height=842)  # A4縦
     pr = page.rect
     black = (0, 0, 0)
@@ -51,9 +56,10 @@ def draw_page(doc, idx: int) -> fitz.Page:
                    NAME_BOX["x1"] * pr.width, NAME_BOX["y1"] * pr.height)
     page.draw_rect(nb, color=black, width=0.8)
     page.insert_text((nb.x0 + 8, nb.y0 + 16), "クラス・番号・氏名", fontname="japan", fontsize=8)
+    # 11ptで欄の幅（約229pt）に収まる（文字列の幅 約198pt）。13ptだと234ptで欄と外枠を越える
     page.insert_text((nb.x0 + 8, nb.y0 + 40),
                      f"3 年 1 組　{idx + 1} 番　　{STUDENTS[idx % len(STUDENTS)]}",
-                     fontname="japan", fontsize=13)
+                     fontname="japan", fontsize=13 if overflow else 11)
 
     # 記入欄
     page.insert_text((70, 230), "1．　今学期の目標について書いてください。",
@@ -69,11 +75,11 @@ def draw_page(doc, idx: int) -> fitz.Page:
     return page
 
 
-def main() -> int:
-    OUT.parent.mkdir(parents=True, exist_ok=True)
+def build_bytes(overflow: bool = False) -> bytes:
+    """4ページのダミー調査票をPDFのバイト列で返す。"""
     vec = fitz.open()
     for i in range(4):
-        draw_page(vec, i)
+        draw_page(vec, i, overflow)
 
     # スキャンPDFを模すため、各ページを画像化して画像だけのページに置き換える
     out = fitz.open()
@@ -82,8 +88,15 @@ def main() -> int:
         p = out.new_page(width=page.rect.width, height=page.rect.height)
         p.insert_image(p.rect, stream=io.BytesIO(pix.tobytes("png")))
     vec.close()
-    out.save(OUT, garbage=4, deflate=True)
+    buf = io.BytesIO()
+    out.save(buf, garbage=4, deflate=True)
     out.close()
+    return buf.getvalue()
+
+
+def main() -> int:
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_bytes(build_bytes())
     print(f"作成: {OUT}（4ページ・架空の氏名入り）")
     return 0
 

@@ -260,8 +260,15 @@ else:
     # 枠内クリアを出さない（要確認どまり・2026-08-23の設計判断）
     check("自動検出では枠内クリアを出さない", count("枠内クリア") == 0,
           f'枠内クリア {count("枠内クリア")} 件')
-    check("漏れのある6本は消え残りありになる", count("消え残り") == n_files - 1,
+    # 08（枠の外にはみ出し）は枠の内側が消えているので消え残りではなく要確認
+    check("漏れのある6本は消え残りありになる", count("消え残り") == n_files - 2,
           f'消え残り {count("消え残り")} 件')
+    def item_named(prefix):
+        return next((d.tree.topLevelItem(i) for i in range(d.tree.topLevelItemCount())
+                     if d.tree.topLevelItem(i).text(0).startswith(prefix)), None)
+    it08 = item_named("08_")
+    check("08（枠の外にはみ出し）は要確認になる", it08 is not None and "要確認" in it08.text(1),
+          it08.text(1) if it08 else "08が無い")
     d.close()
     # 枠を指定すれば、正常な1本だけが枠内クリアになる
     d2 = gui.CheckDialog(screen_rects=[dict(RECT_LEAK)])

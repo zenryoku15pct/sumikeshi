@@ -11,6 +11,8 @@ samples/ダミー調査票.pdf（make_dummy_sample.py で生成）から7本を�
   05 一部ページだけ未処理  … 3ページ目の取りこぼし            → ページ整合で落ちるべき
   06 多層の1層に残存       … MRCの上層に氏名が残る            → [1]の全層走査で落ちるべき
   07 メタデータ残存        … 処理を通っていない疑い            → [0]で落ちるべき
+  08 枠の外にはみ出し      … 欄どおりに塗ったが字が欄より長い  → [1.5]で要確認になるべき
+                             （合格でも不合格でもない。枠の内側は消えている）
 
 使い方: python3 make_leak_samples.py
 出力先: samples/leak-check/
@@ -136,6 +138,21 @@ def make_07_metadata():
     save(doc, "07_漏れ_メタデータ残存.pdf", clear_meta=False)
 
 
+def make_08_overflow():
+    """氏名が欄から右へはみ出した紙を、欄の枠どおりに本体で塗る。枠の内側は消えるが
+    最後の1字が枠の外に残る。2026-08-21〜09-26のお試し用PDFは意図せずこの形で、
+    「枠内クリア」が出るのを作者本人が実機テストで見つけた。同じ素通りを二度と
+    起こさないよう、事故の形のまま見本に残す。[1.5]が要確認に落とすべき。"""
+    import masking
+    import make_dummy_sample
+    data = make_dummy_sample.build_bytes(overflow=True)
+    with fitz.open(stream=data, filetype="pdf") as d:
+        pages = list(range(1, d.page_count + 1))
+    out = masking.apply_masks(data, [RECT], "black", pages)
+    (OUT_DIR / "08_はみ出し_枠の外に氏名の一部.pdf").write_bytes(out)
+    print("  作成: 08_はみ出し_枠の外に氏名の一部.pdf")
+
+
 def main():
     if not SRC.exists():
         print(f"元になるダミーPDFがありません: {SRC}", file=sys.stderr)
@@ -144,7 +161,8 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"検査用サンプルを作成します（元: {SRC.name}）")
     for fn in (make_01_ok, make_02_overlay_only, make_03_text_layer, make_04_annot,
-               make_05_missed_page, make_06_multilayer, make_07_metadata):
+               make_05_missed_page, make_06_multilayer, make_07_metadata,
+               make_08_overflow):
         fn()
     print(f"\n出力先: {OUT_DIR}")
     print("検査: python3 check_masked.py samples/leak-check/ --no-report")

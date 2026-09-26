@@ -1,7 +1,7 @@
 {
   "採取元": "masking.py",
   "素材": "ダミー調査票.pdf",
-  "素材sha256": "f154134468a7de13fb3875930a27deaddcc406ea585b91c2df1d33152a7b121b",
+  "素材sha256": "daf9843fddf5decc28e90058598b27589dd22679af09d8871e4640a672e9a350",
   "結果": [
     {
       "label": "氏名欄1つ・黒・全ページ",
@@ -13,8 +13,8 @@
       ],
       "blank": [],
       "verdict": "ok",
-      "size": 185475,
-      "sha256": "f523c0be151796a4383006aa282cfac9fd7062bfd5babaa8aacf494576d32753"
+      "size": 183014,
+      "sha256": "8dc5c60afbfa04b0accae5290d25e6549feb7956b6b13b72ff1afd8e00ca442d"
     },
     {
       "label": "2つ・黒・全ページ",
@@ -26,8 +26,8 @@
       ],
       "blank": [],
       "verdict": "ok",
-      "size": 179071,
-      "sha256": "bedb1fd0426234f763e136210ed043bbe6e9867c89256ad4c1fc0410bf2b3b07"
+      "size": 176583,
+      "sha256": "9d9ec8ac34446aa6b9ba994ddb7dd71c55cfb3ed779a1d1ff49d87020be08fe4"
     },
     {
       "label": "1つ・白・全ページ",
@@ -39,8 +39,8 @@
       ],
       "blank": [],
       "verdict": "ok",
-      "size": 185475,
-      "sha256": "30e18164b94055c17f37b88af99ff8b6cbec0c62ca9c97b4f2e4043fe24c44fa"
+      "size": 183014,
+      "sha256": "49058698fdef9e4899ff3f7228da6cc4d0855b447bf88097bc9be5691fbd1a2c"
     },
     {
       "label": "2つ・黒・ページ指定 1-2",
@@ -50,8 +50,8 @@
       ],
       "blank": [],
       "verdict": "ok",
-      "size": 197671,
-      "sha256": "11e6eb771e295e70624b51d60f74bb18b04f47b7ff814c074d1393bf8ef159a3"
+      "size": 195169,
+      "sha256": "2ab06bdc243933940ef7d2902b981b4d1741e080e7590ae2df9cc3be0f291cf5"
     },
     {
       "label": "1つ・黒・奇数ページのみ",
@@ -61,8 +61,8 @@
       ],
       "blank": [],
       "verdict": "ok",
-      "size": 200855,
-      "sha256": "58347c9c2df3d529633858ecd88431bfb1720dd086831aff89095c2ffbbc8f02"
+      "size": 198258,
+      "sha256": "509791c248894afa5908a51f8520ee5fdd228413f2600fefef090133b4a13603"
     },
     {
       "label": "1つ・黒・偶数ページのみ",
@@ -72,8 +72,8 @@
       ],
       "blank": [],
       "verdict": "ok",
-      "size": 201142,
-      "sha256": "028891c86c019d340cefd1439bdecc7833a668b3a15ed707ca89c05eba005b03"
+      "size": 198593,
+      "sha256": "41ccd6472a3a53a18237212bad145274d404969a73a2e70858ed24bdb04ff0fc"
     },
     {
       "label": "端に接する矩形（境界値）",
@@ -84,9 +84,9 @@
         4
       ],
       "blank": [],
-      "verdict": "ok",
-      "size": 209861,
-      "sha256": "e0906f93ab94aae84fc11eba6a0d5fbff596e1d35582f3e712993d465d4feabe"
+      "verdict": "warn",
+      "size": 207209,
+      "sha256": "f9edaccd0eabd7067b4f25e43f4cb3f0f6cf7c7029931a7f00c89512dd7f0bd3"
     },
     {
       "label": "何もない場所（位置ずれ検出）",
@@ -100,8 +100,8 @@
         1
       ],
       "verdict": "ok",
-      "size": 211095,
-      "sha256": "8172ca688057e2dea0517d881b5c8c1f8e6f4414c41e2b10481eed34b35b0388"
+      "size": 208410,
+      "sha256": "83a3720dbf8d394bfb9bf42d3c4653d63146779f2c53669cb75b75a5784da43e"
     }
   ]
 }

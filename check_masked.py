@@ -79,6 +79,13 @@ MIN_MASK_W_PT = 10.0       # マスクとみなす最小の幅(pt)
 MIN_MASK_H_PT = 5.0        # マスクとみなす最小の高さ(pt)
 MIN_REGION_PX = 4          # これ未満の交差画素数はレイヤー判定から除く
 
+# [1.5] 枠の縁：枠のすぐ外側の帯を見て、縁を横切って外へ続く字を拾う
+EDGE_BAND_PT = 12          # 見る帯の幅（pt）。1文字ぶんより少し広い
+EDGE_ZOOM = 2.0            # 帯を描く倍率（72dpi×2）
+EDGE_ROW_FRAC = 0.25       # 行（列）の幅のこれ以上が暗ければ「字の行」とみなす
+EDGE_MIN_RUN_PT = 3.0      # 字の行がこれ以上続けば字とみなす（縁を横切る罫線は1〜2pt）
+EDGE_DARK = 150            # これより暗い画素をインクとみなす（0〜255）
+
 
 # ---------------------------------------------------------------- 矩形の入力
 def load_preset_rects(name: str) -> list[dict]:
@@ -267,6 +274,53 @@ def mask_to_image_pixels(mask_unrot: fitz.Rect, info: dict, inset: int = 0):
     return c0, r0, c1, r1
 
 
+# ---------------------------------------------------------------- 枠の縁
+def edge_overflow(page, disp_rects) -> list[str]:
+    """[1.5] 枠の縁を横切って外へ続く字を探し、見つかった辺の名前を返す。
+
+    枠の四辺それぞれのすぐ外側の帯（幅 EDGE_BAND_PT）を描画し、帯の幅の
+    EDGE_ROW_FRAC 以上が暗い行が EDGE_MIN_RUN_PT 以上続く塊を「縁を横切る字」と
+    みなす。縁に沿って走る罫線（欄の枠線・用紙の外枠）は各行に1〜2画素しか載らず、
+    縁を横切る罫線（下線・表の横線）は1〜2行しか続かないので、どちらも拾わない。
+
+    合格を出す仕組みではなく、要確認に落とすための網。氏名が欄より長く書かれて
+    いても、枠の内側だけを見る[1]〜[3]は「枠内クリア」を出す。2026-09-26、お試し用
+    PDFの氏名が欄から13ptはみ出したまま1か月気づかれず、作者本人が実機テストで
+    「OKが出た」と読んだ。マスク枠から離れた別欄の氏名は、この網でも見えない。
+    """
+    found = []
+    pr = page.rect
+    for i, r in enumerate(disp_rects):
+        r = fitz.Rect(r)
+        bands = (("右", fitz.Rect(r.x1, r.y0, r.x1 + EDGE_BAND_PT, r.y1), "y"),
+                 ("左", fitz.Rect(r.x0 - EDGE_BAND_PT, r.y0, r.x0, r.y1), "y"),
+                 ("上", fitz.Rect(r.x0, r.y0 - EDGE_BAND_PT, r.x1, r.y0), "x"),
+                 ("下", fitz.Rect(r.x0, r.y1, r.x1, r.y1 + EDGE_BAND_PT), "x"))
+        for name, clip, along in bands:
+            clip = clip & pr                      # 用紙の外へ出た帯は切り落とす
+            if clip.is_empty or clip.width < 1 or clip.height < 1:
+                continue
+            pix = page.get_pixmap(matrix=fitz.Matrix(EDGE_ZOOM, EDGE_ZOOM), clip=clip,
+                                  colorspace=fitz.csGRAY, alpha=False)
+            w, h, st, s = pix.width, pix.height, pix.stride, pix.samples
+            if along == "y":      # 縦の辺：行ごとに、帯の幅のうち暗い割合
+                frac = [sum(1 for x in range(w) if s[y * st + x] < EDGE_DARK) / w
+                        for y in range(h)]
+            else:                 # 横の辺：列ごとに、帯の高さのうち暗い割合
+                frac = [sum(1 for y in range(h) if s[y * st + x] < EDGE_DARK) / h
+                        for x in range(w)]
+            run = 0
+            for v in frac + [0.0]:
+                if v >= EDGE_ROW_FRAC:
+                    run += 1
+                    continue
+                if run / EDGE_ZOOM >= EDGE_MIN_RUN_PT:
+                    found.append(f"枠{i + 1}の{name}")
+                    break
+                run = 0
+    return found
+
+
 # ---------------------------------------------------------------- ページ検査
 def check_page(doc, page, rects_norm, opt):
     """1ページを検査して結果の辞書を返す。"""
@@ -366,6 +420,22 @@ def check_page(doc, page, rects_norm, opt):
 
         res["n_layers"] = len(page.get_image_info())
         return res
+
+    # ---- [1.5] 枠の縁（縁を横切って外へ続く字）
+    try:
+        edges = edge_overflow(page, disp)
+    except Exception as e:
+        edges = []
+        if RANK[WARN] > RANK[res["verdict"]]:
+            res["verdict"] = WARN
+        res["reasons"].append(f"枠の縁を調べられなかった（確認できない＝合格にしない）: {e}")
+    res["edges"] = edges
+    if edges:
+        if RANK[WARN] > RANK[res["verdict"]]:
+            res["verdict"] = WARN
+        res["reasons"].append(
+            f"枠の縁を横切って外へ続く字がある（{'・'.join(edges)}）"
+            "——字が枠より長い疑い。枠を広げて塗り直してください")
 
     # ---- [1] 画像レイヤー
     infos = page.get_image_info(xrefs=True)
@@ -524,8 +594,9 @@ def build_report(results, tol, rects_source) -> str:
          f"- 均一判定の許容幅：{tol}（0〜255。再圧縮のにじみを見込んだ値）", "",
          "> **このレポートが保証するのは、指定したマスク枠の内側だけです。**",
          "> 用紙全体の安全証明ではなく、外部に出してよいかの判断にも、事故調査の",
-         "> 根拠にも使えません。マスク枠の外（はみ出し・別欄の氏名・保護者署名・",
-         "> 緊急連絡先・自由記述の中の名前）と**ファイル名**は検査していません。",
+         "> 根拠にも使えません。枠の縁を横切る字は⚠で知らせますが、枠から離れた場所",
+         "> （別欄の氏名・保護者署名・緊急連絡先・自由記述の中の名前）と**ファイル名**は",
+         "> 検査していません。",
          "> 押さえるべき欄がすべて枠に入っているかは、用紙の現物を見て人が判断してください。", ""]
 
     L += ["## 総括", "", "|ファイル|ページ数|判定|不合格|要確認|", "|-|-|-|-|-|"]
@@ -669,8 +740,8 @@ def main():
     print()
     print("=" * 64)
     print(f"検査結果（許容幅={args.tolerance} / マスク領域={source}）")
-    print("※「合格」＝指定領域の内側のみの判定。枠からのはみ出し・別欄の")
-    print("  氏名（保護者署名等）は見ていない。欄の網羅は人が現物で確認する")
+    print("※「合格」＝指定領域の内側のみの判定。枠の縁を横切る字は⚠で知らせるが、")
+    print("  枠から離れた別欄の氏名（保護者署名等）は見ていない。欄の網羅は人が現物で確認する")
     print("=" * 64)
     worst = OK
     console_marks = {OK: _mark("✅", "[OK]") + " 合格",
