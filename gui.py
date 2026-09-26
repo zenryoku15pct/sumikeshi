@@ -781,8 +781,7 @@ class CheckDialog(QDialog):
         v.addWidget(self.tree, 1)
 
         v.addWidget(hint(
-            "⚠ 検査が見ているのは<b>塗った範囲の中だけ</b>です。押さえるべき欄がすべて入っているかは、"
-            "できあがったPDFを目で確かめてください。"))
+            "⚠ 検査が見ているのは<b>塗った範囲の中だけ</b>です。枠の外は見ていません。"))
 
         bottom = QHBoxLayout()
         self.report_lb = QLabel("")
@@ -1180,10 +1179,8 @@ class MainWindow(QMainWindow):
         # 2ファイル以上だと箱の中に隠れてしまう（2026-08-21の監査）。
         # 箱の外へ出して、スクロールに関わらず必ず目に入るようにする。
         self.warn = QLabel(
-            "⚠ 検査は<b>塗った範囲の中だけ</b>を見ています。押さえるべき欄がすべて"
-            "入っているかは、できあがったPDFを目で確かめてください。<br>"
-            "⚠ マスク前の元ファイルはこのツールでは移動・削除されません。"
-            "所定の場所への隔離、または不要なら削除を忘れずに。")
+            "⚠ 検査は<b>塗った範囲の中だけ</b>を見ています。枠の外は見ていません。<br>"
+            "⚠ マスク前の元ファイルはこのツールでは移動・削除されません。")
         self.warn.setWordWrap(True)
         self.warn.setProperty("kind", "caution")
         l5.addWidget(self.warn)
