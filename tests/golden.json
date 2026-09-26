@@ -14,7 +14,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 185475,
-      "sha256": "e75c34e697c46ca618a0351e9833fd9b9721ea7b219c80f3ad1f05ccc389e2d8"
+      "sha256": "f523c0be151796a4383006aa282cfac9fd7062bfd5babaa8aacf494576d32753"
     },
     {
       "label": "2つ・黒・全ページ",
@@ -27,7 +27,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 179071,
-      "sha256": "48e2ee565db1da28b28eca1ea4a4d25c3e9e765693dbeb35a1274d1151470967"
+      "sha256": "bedb1fd0426234f763e136210ed043bbe6e9867c89256ad4c1fc0410bf2b3b07"
     },
     {
       "label": "1つ・白・全ページ",
@@ -40,7 +40,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 185475,
-      "sha256": "c904c5599b020596585130ab9c95ec4ea3dfbcb43e743af34c669b659f3ced3d"
+      "sha256": "30e18164b94055c17f37b88af99ff8b6cbec0c62ca9c97b4f2e4043fe24c44fa"
     },
     {
       "label": "2つ・黒・ページ指定 1-2",
@@ -51,7 +51,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 197671,
-      "sha256": "c136078b251e8497f2de92dec3c0c19dcc4013ffe6f2ea02464e98a020bfc3aa"
+      "sha256": "11e6eb771e295e70624b51d60f74bb18b04f47b7ff814c074d1393bf8ef159a3"
     },
     {
       "label": "1つ・黒・奇数ページのみ",
@@ -62,7 +62,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 200855,
-      "sha256": "6e70438487bc7a848a00f3f7e6b8bb82f22df16cff93e96fbdeb5d4d081cd624"
+      "sha256": "58347c9c2df3d529633858ecd88431bfb1720dd086831aff89095c2ffbbc8f02"
     },
     {
       "label": "1つ・黒・偶数ページのみ",
@@ -73,7 +73,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 201142,
-      "sha256": "453d9e5729bed4df96924c2f5d0a407a6a1a68c7873f3f3f7ceab230a1f592cd"
+      "sha256": "028891c86c019d340cefd1439bdecc7833a668b3a15ed707ca89c05eba005b03"
     },
     {
       "label": "端に接する矩形（境界値）",
@@ -86,7 +86,7 @@
       "blank": [],
       "verdict": "ok",
       "size": 209861,
-      "sha256": "78bc8a20d9ee2798599315077da057a9a0693f9985b43f841b33243eb06ee14d"
+      "sha256": "e0906f93ab94aae84fc11eba6a0d5fbff596e1d35582f3e712993d465d4feabe"
     },
     {
       "label": "何もない場所（位置ずれ検出）",
@@ -101,7 +101,7 @@
       ],
       "verdict": "ok",
       "size": 211095,
-      "sha256": "1655301e20f2683c9f7b1da7b6215d24dada648ed944d56441dd200ae0a03b45"
+      "sha256": "8172ca688057e2dea0517d881b5c8c1f8e6f4414c41e2b10481eed34b35b0388"
     }
   ]
 }

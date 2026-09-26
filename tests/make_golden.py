@@ -53,10 +53,15 @@ CASES = [
 # ある（乱数の中身しだい・2026-08-23に実測）。両方の形を伏せる
 _S = rb"(?:<[0-9A-Fa-f]*>|\((?:[^\\()]|\\.)*\))"
 _ID = re.compile(rb"/ID\s*\[\s*" + _S + rb"\s*" + _S + rb"\s*\]")
+# 処理済みの印の src: は原本の生バイトの指紋なので、素材PDFの文書IDが変わると
+# 一緒に変わる。CIは素材を毎回作り直すため、手元の golden と合わなくなる
+# （2026-09-26 CIで8件すべて外れた）。桁数は固定なので、伏せても長さは変わらない
+_SRC = re.compile(rb"src:[0-9a-f]{16}")
 
 
 def digest(pdf_bytes: bytes) -> str:
-    return hashlib.sha256(_ID.sub(b"/ID[<>x<>]", pdf_bytes)).hexdigest()
+    masked = _SRC.sub(b"src:" + b"x" * 16, _ID.sub(b"/ID[<>x<>]", pdf_bytes))
+    return hashlib.sha256(masked).hexdigest()
 
 
 def collect(mod, sample: Path) -> list[dict]:

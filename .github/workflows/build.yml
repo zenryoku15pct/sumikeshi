@@ -25,6 +25,10 @@ jobs:
           # Intel Mac（macos-13）は実行環境の提供終了により対象外。
           # Intel Macの利用者はソース版（セットアップ.command）を使う
     runs-on: ${{ matrix.os }}
+    env:
+      # WindowsのCIは画面出力が cp1252 で、日本語を print した時点で止まる
+      # （2026-09-26 make_leak_samples.py で実測）。UTF-8に揃える
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
