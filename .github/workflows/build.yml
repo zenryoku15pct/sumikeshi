@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       # WindowsのCIは画面出力が cp1252 で、日本語を print した時点で止まる
-      # （2026-09-26 make_leak_samples.py で実測）。UTF-8に揃える
+      # （2026-09-26 実測）。UTF-8に揃える
       PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
@@ -58,18 +58,6 @@ jobs:
 
       - name: お試し用PDFを生成
         run: python make_dummy_sample.py
-
-      - name: 漏れサンプルを生成
-        run: python make_leak_samples.py
-
-      - name: テスト（中核・画面の動き・漏れの検出・過去の事故の再発）
-        shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          python tests/test_core.py
-          python tests/test_gui.py
-          python tests/test_regressions.py
 
       - name: ビルド
         run: pyinstaller --noconfirm --clean sumikeshi.spec

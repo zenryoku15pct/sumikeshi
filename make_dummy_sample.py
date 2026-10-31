@@ -2,7 +2,7 @@
 """お試し用のダミーPDF（架空の氏名入り）を生成する
 
 手書き書類のスキャンPDFを模した、画像ベースのダミーを samples/ に作る。
-氏名はすべて架空。マスキングの練習・検査の動作確認（make_leak_samples.py）に使う。
+氏名はすべて架空。マスキングと検査の練習に使う。
 
 使い方: python3 make_dummy_sample.py
 出力  : samples/ダミー調査票.pdf（4ページ）
@@ -24,7 +24,7 @@ for _s in (sys.stdout, sys.stderr):
 BASE_DIR = Path(__file__).resolve().parent
 OUT = BASE_DIR / "samples" / "ダミー調査票.pdf"
 
-# 氏名欄の位置（正規化座標）。make_leak_samples.py の RECT と一致させてある
+# 氏名欄の位置（正規化座標）
 NAME_BOX = {"x0": 0.5418, "y0": 0.1080, "x1": 0.9273, "y1": 0.1825}
 
 STUDENTS = ["架空 太郎", "架空 花子", "見本 次郎", "試験 三子"]
@@ -41,7 +41,7 @@ def draw_page(doc, idx: int, overflow: bool = False) -> fitz.Page:
 
     overflow=True は「氏名が欄から右へはみ出した紙」。2026-08-21〜09-26のお試し用PDFは
     意図せずこの形で（13ptで欄より13pt長い）、欄どおりに塗ると「郎」が枠の外に残るのに
-    「枠内クリア」が出た。いまは漏れ見本08（make_leak_samples.py）だけがこの形を使う。
+    「枠内クリア」が出た。いまのお試し用PDFはこの形を使わない。
     """
     page = doc.new_page(width=595, height=842)  # A4縦
     pr = page.rect

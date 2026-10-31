@@ -10,3 +10,7 @@ dist/
 backup/
 audit/
 検査レポート/
+# 開発用（手元だけで使う・2026-10-31 公開から外した）
+make_leak_samples.py
+make_icon.py
+tests/
