@@ -14,3 +14,8 @@ audit/
 make_leak_samples.py
 make_icon.py
 tests/
+# ビルド用（手元だけで使う・2026-10-31 公開から外した）
+sumikeshi.spec
+.github/workflows/build.yml
+assets/icon.ico
+assets/icon.icns
